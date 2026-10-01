@@ -22,6 +22,7 @@ import json
 import os
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -455,10 +456,15 @@ class BeliefBase:
         waiting: dict[str, str] = {}
         for _ in range(max_rounds):
             progressed = False
-            for node in self._rederive_candidates():
+            candidates = self._rederive_candidates()
+            waiting_keys = {n.belief.key for n in candidates}
+            for node in candidates:
                 if node.status is Status.IN or self._in_nodes(node.belief.key):
+                    waiting_keys.discard(node.belief.key)
                     continue
-                result, why = self._try_rederive(node, rederive)
+                result, why = self._try_rederive(node, rederive, waiting_keys)
+                if result is not None:
+                    waiting_keys.discard(node.belief.key)
                 if result is not None:
                     rederived.append(result)
                     waiting.pop(node.ref, None)
@@ -518,10 +524,29 @@ class BeliefBase:
             node = self._nodes[refs[-1]]
             if node.status is Status.OUT and not node.retracted and any(j.rederivable for j in node.justifications):
                 nodes.append(node)
-        nodes.sort(key=lambda n: (n.belief.created_at, n.belief.ref))
-        return nodes
+        # Dependency order: a belief comes after every candidate among its recipe inputs. Timestamps
+        # only break ties; they can't be relied on for order (coarse clocks give equal values).
+        by_key = {n.belief.key: n for n in nodes}
+        deps = {
+            key: {k for j in n.justifications if j.rederivable for k in j.inputs if k in by_key and k != key}
+            for key, n in by_key.items()
+        }
+        remaining = sorted(by_key, key=lambda k: (by_key[k].belief.created_at, k))
+        ordered: list[_Node] = []
+        placed: set[str] = set()
+        while remaining:
+            ready = [k for k in remaining if deps[k] <= placed]
+            if not ready:  # a cycle among candidates: keep the remaining ones in tie-break order
+                ready = remaining
+            for k in ready:
+                ordered.append(by_key[k])
+                placed.add(k)
+            remaining = [k for k in remaining if k not in placed]
+        return ordered
 
-    def _try_rederive(self, node: _Node, rederive: Rederiver | None) -> tuple[Belief | None, str]:
+    def _try_rederive(
+        self, node: _Node, rederive: Rederiver | None, waiting_keys: AbstractSet[str] = frozenset()
+    ) -> tuple[Belief | None, str]:
         why = "no re-derivable justification"
         for just in reversed(node.justifications):
             if not just.rederivable:
@@ -552,6 +577,12 @@ class BeliefBase:
                     continue
                 derived = Derived(value=value)
             else:
+                # An input that is itself about to be re-derived must come first; otherwise the model
+                # would re-derive from an incomplete context.
+                blocked = [k for k in missing if k in waiting_keys]
+                if blocked:
+                    why = f"waiting for: {', '.join(blocked)}"
+                    continue
                 if rederive is None:
                     why = "needs model re-derivation" + (f" (missing: {', '.join(missing)})" if missing else "")
                     continue

@@ -138,7 +138,8 @@ def _type_hints(fn: Callable[..., Any]) -> dict[str, Any]:
 
 
 def _type_name(annotation: Any) -> str:
-    if isinstance(annotation, type):
+    # On Python 3.10, isinstance(list[str], type) is True, so rule out generic aliases first.
+    if typing.get_origin(annotation) is None and isinstance(annotation, type):
         return annotation.__name__
     return str(annotation).replace("typing.", "")
 

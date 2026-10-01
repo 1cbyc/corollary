@@ -391,3 +391,21 @@ def test_model_from_string_and_plain_function_tools() -> None:
     agent = Agent("anthropic:claude-opus-5-5", tools=[add])
     assert agent.model.name == "claude-opus-5-5"
     assert "add" in agent.tools
+
+
+def test_repair_follows_dependencies_even_with_identical_timestamps(clock: Clock) -> None:
+    """Regression: on Windows, coarse clocks gave growth, trend and answer the same created_at,
+    and re-derivation fell back to alphabetical order (answer first)."""
+    model = ScriptedModel([FETCH, ANALYZE])
+    agent = Agent(model, BeliefBase(clock=clock), tools=[get_revenue])  # the clock never advances
+    report = agent.run("t")
+    correct_q2(agent)
+    model.add(
+        actions(claim("growth:Q3_vs_Q2", None, ["revenue:Q2", "revenue:Q3"], formula=GROWTH)),
+        actions(claim("trend", "strong", ["growth:Q3_vs_Q2"])),
+        actions(claim("answer", "Q3 grew 9.76%: strong.", ["growth:Q3_vs_Q2", "trend"])),
+    )
+    result = agent.repair()
+    assert [c.key for c in result.added] == ["revenue:Q2", "growth:Q3_vs_Q2", "trend", "answer"]
+    assert report.answer == "Q3 grew 9.76%: strong."
+    assert "Re-derive the belief `growth:Q3_vs_Q2`" in model.calls[2].prompt
