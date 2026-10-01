@@ -16,6 +16,10 @@ Correct one fact, and everything that followed from it updates itself.
 
 [Documentation](docs/index.md) · [Getting started](docs/getting-started.md) · [Examples](examples/) · [Contributing](CONTRIBUTING.md)
 
+<br>
+
+<img src="docs/assets/corollary-demo.gif" alt="Animated diagram: beliefs linked by what they follow from. Q2 revenue is corrected, every conclusion that depended on it goes OUT, and only those are re-derived, while an independent risk belief stays untouched." width="860">
+
 </div>
 
 ---
