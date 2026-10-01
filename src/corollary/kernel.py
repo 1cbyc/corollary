@@ -17,6 +17,7 @@ retraction scales with what depends on it, not with the size of the belief base.
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import json
 import os
@@ -42,13 +43,14 @@ from .errors import (
 )
 from .formula import evaluate, formula_keys
 from .justification import Justification, JustificationKind
+from .ledger import TrustLedger
 from .proof import Proof
 from .rules import Rule
 from .textmatch import contains_quote, value_in_text
 from .trust import TrustPolicy
 
 _FORMAT = "corollary.beliefbase"
-_FORMAT_VERSION = 1
+_FORMAT_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,8 @@ class BeliefBase:
             windows deterministic in tests.
         rules: Rules to register up front (also needed when loading a saved base).
         constraints: Invariants that raise a :class:`Conflict` when violated.
+        ledger: A :class:`TrustLedger` to learn source reliability in. Pass the same ledger to
+            many belief bases to learn across all of them; by default each base has its own.
 
     Basic usage::
 
@@ -145,9 +149,17 @@ class BeliefBase:
         clock: Callable[[], datetime] | None = None,
         rules: Iterable[Rule] = (),
         constraints: Iterable[Constraint] = (),
+        ledger: TrustLedger | None = None,
     ) -> None:
         self.trust = trust or TrustPolicy()
         self._clock = clock or utcnow
+        self.ledger = ledger if ledger is not None else TrustLedger()
+        self._owns_ledger = ledger is None
+        # Confidence cache, invalidated by any graph change, ledger change or (with decay) time.
+        self._version = 0
+        self._decaying = False
+        self._conf_cache: dict[str, float] = {}
+        self._conf_epoch: tuple[Any, ...] | None = None
         self._nodes: dict[str, _Node] = {}
         self._revisions: dict[str, list[str]] = {}
         self._justifications: dict[str, Justification] = {}
@@ -189,6 +201,8 @@ class BeliefBase:
         confidence: float | None = None,
         valid_until: datetime | None = None,
         ttl: timedelta | None = None,
+        half_life: timedelta | None = None,
+        origin: str | None = None,
         supersede: bool = False,
         metadata: Mapping[str, Any] | None = None,
     ) -> Belief:
@@ -202,10 +216,18 @@ class BeliefBase:
           still ``IN``, the two now form a value :class:`Conflict`, unless ``supersede=True``, in
           which case the older revisions are retracted first.
 
-        ``ttl`` (or ``valid_until``) bounds how long this piece of evidence is valid.
+        ``ttl`` (or ``valid_until``) bounds how long this piece of evidence is valid: after it, the
+        evidence expires and the belief goes ``OUT``. ``half_life`` instead makes its confidence
+        fade gradually (halving every ``half_life``) without changing its status.
+
+        ``origin`` declares an independence group: sources with the same origin (two tools reading
+        the same database) count once when they agree. Corroboration by a source of a *different*
+        origin is recorded in the trust ledger as a success for both.
         """
         validate_key(key)
-        src = Source.parse(source)
+        src = Source.parse(source).with_origin(origin)
+        if half_life is not None and half_life.total_seconds() <= 0:
+            raise ValueError("half_life must be positive")
         if src.kind is SourceKind.RULE:
             raise ValueError(
                 "rule sources are reserved for derive(); assert premises from a tool, document, human or assumption"
@@ -216,9 +238,16 @@ class BeliefBase:
         target = self._matching_node(key, value, allow_expired=True)
         if target is not None:
             renewing = target.status is Status.OUT
+            if not renewing:
+                self._credit_confirmation(target, src)
             self._hints[target.ref] = f"renewed by {src}" if renewing else f"corroborated by {src}"
             self._add_justification(
-                target, kind=JustificationKind.PREMISE, source=src, confidence=conf, valid_until=until
+                target,
+                kind=JustificationKind.PREMISE,
+                source=src,
+                confidence=conf,
+                valid_until=until,
+                half_life=half_life,
             )
             self._log("renew" if renewing else "support", target.ref, f"by {src}")
             return target.belief
@@ -236,6 +265,7 @@ class BeliefBase:
             source=src,
             confidence=conf,
             valid_until=until,
+            half_life=half_life,
             extra_seeds=[n.ref for n in superseded],
             created=True,
         )
@@ -356,6 +386,10 @@ class BeliefBase:
         Every antecedent must currently be believed. When ``formula`` is given it is evaluated
         against the antecedent values and must reproduce ``value``, otherwise
         :class:`FormulaError` is raised and nothing is recorded.
+
+        ``confidence`` is the certainty of this particular step (a stated confidence, or a
+        self-consistency score) between 0 and 1, defaulting to 1. The source's own reliability is
+        applied on top when confidence is computed; see :meth:`confidence`.
         """
         src = Source.parse(source)
         nodes = [self._resolve_antecedent(item) for item in antecedents]
@@ -369,7 +403,7 @@ class BeliefBase:
                 raise FormulaError(
                     f"formula {formula!r} evaluates to {format_value(computed)}, not {format_value(value)}"
                 )
-        conf = self.trust.confidence_for(src) if confidence is None else _check_confidence(confidence)
+        conf = 1.0 if confidence is None else _check_confidence(confidence)
         return self._conclude(
             key,
             value,
@@ -390,13 +424,22 @@ class BeliefBase:
     # Retraction
     # ======================================================================================
 
-    def retract(self, key_or_ref: str, *, reason: str = "") -> list[Belief]:
+    def retract(self, key_or_ref: str, *, reason: str = "", fault: str = "none") -> list[Belief]:
         """Withdraw a belief. Everything that depended on it goes ``OUT`` immediately.
 
         A key retracts every ``IN`` revision of that key; a ref (``key@2``) retracts exactly that
         revision. Call :meth:`propagate` afterwards to re-derive what can be re-derived and to get
         the diff of what changed.
+
+        ``fault`` says whose mistake it was, which is what the trust ledger learns from:
+
+        * ``"none"`` (default): nobody's. The world changed, e.g. figures were restated.
+        * ``"source"``: the value was wrong when it was given. Every source accountable for the
+          belief (its premise sources, or the model behind an unverified claim) is recorded as
+          wrong, and its reliability drops.
         """
+        if fault not in ("none", "source"):
+            raise ValueError(f"fault must be 'none' or 'source', got {fault!r}")
         key, revision = parse_ref(key_or_ref)
         if revision is not None:
             nodes = [self._node(key_or_ref)]
@@ -405,6 +448,13 @@ class BeliefBase:
             nodes = self._in_nodes(key)
             if not nodes:
                 raise NotBelievedError(f"{key!r} is not currently believed, so there is nothing to retract")
+        if fault == "source":
+            if not any(self._accountable_sources(n) for n in nodes):
+                raise ValueError(
+                    f"{key_or_ref!r} is derived by a rule or a verified formula, so no source is at fault; "
+                    "retract the input that was wrong instead"
+                )
+            self._record_outcomes(nodes, correct=False, reason=reason or "retracted as wrong")
         return self._retract_nodes(nodes, reason)
 
     def restore(self, key_or_ref: str) -> Belief:
@@ -733,8 +783,15 @@ class BeliefBase:
         keep: str | Belief | Iterable[str | Belief] | None = None,
         retract: str | Belief | Iterable[str | Belief] | None = None,
         reason: str = "",
+        learn: bool = False,
     ) -> Resolution:
-        """Resolve a conflict by keeping some sides (retracting the rest) or retracting given sides."""
+        """Resolve a conflict by keeping some sides (retracting the rest) or retracting given sides.
+
+        With ``learn=True`` the decision is treated as ground truth (a person checked it): the
+        sources of retracted sides are recorded as wrong in the trust ledger, and for value
+        conflicts the sources of the kept side as right. Leave it off for policy decisions, or a
+        policy would end up reinforcing itself.
+        """
         if (keep is None) == (retract is None):
             raise ValueError("pass exactly one of keep= or retract=")
         chosen = {self._node(_as_ref(self, x)).ref for x in _as_list(keep if keep is not None else retract)}
@@ -743,9 +800,22 @@ class BeliefBase:
             raise ValueError(f"{', '.join(sorted(unknown))} are not part of conflict {conflict.id}")
         refs = [r for r in conflict.refs if (r not in chosen) == (keep is not None)]
         why = reason or f"resolved conflict {conflict.id}"
-        self._retract_nodes([self._nodes[r] for r in refs], why)
-        self._log("resolve", conflict.id, f"retracted {', '.join(refs)}")
-        return Resolution(conflict.id, tuple(refs), why)
+        resolution = Resolution(conflict.id, tuple(refs), why, authoritative=learn)
+        self._apply_resolution(conflict, resolution)
+        return resolution
+
+    def _apply_resolution(self, conflict: Conflict, resolution: Resolution) -> list[str]:
+        live = [r for r in resolution.retract if self._nodes[r].status is Status.IN]
+        if not live:
+            return []
+        if resolution.authoritative:
+            self._record_outcomes([self._nodes[r] for r in live], correct=False, reason=resolution.reason)
+            if conflict.kind is ConflictKind.VALUE:
+                kept = [self._nodes[r] for r in conflict.refs if r not in resolution.retract]
+                self._record_outcomes(kept, correct=True, reason=resolution.reason)
+        self._retract_nodes([self._nodes[r] for r in live], resolution.reason)
+        self._log("resolve", conflict.id, f"retracted {', '.join(live)}")
+        return live
 
     def resolve_conflicts(self, resolver: Resolver, *, max_rounds: int = 10) -> list[Resolution]:
         """Apply ``resolver`` to every open conflict until none can be resolved."""
@@ -756,11 +826,8 @@ class BeliefBase:
                 decision = resolver(conflict, self)
                 if decision is None or not decision.retract:
                     continue
-                live = [r for r in decision.retract if self._nodes[r].status is Status.IN]
-                if not live:
+                if not self._apply_resolution(conflict, decision):
                     continue
-                self._retract_nodes([self._nodes[r] for r in live], decision.reason)
-                self._log("resolve", conflict.id, f"retracted {', '.join(live)}")
                 applied.append(decision)
                 progressed = True
             if not progressed:
@@ -835,29 +902,54 @@ class BeliefBase:
         return sum(1 for n in self._nodes.values() if n.status is Status.IN)
 
     def confidence(self, key_or_ref: str) -> float:
-        """Effective confidence: the support's own confidence times the weakest antecedent's.
+        """Effective confidence of a belief, between 0 (``OUT``) and 1.
 
-        ``OUT`` beliefs have confidence 0.
+        * A premise counts ``reliability(source) * freshness``: the source's reliability is learned
+          by the trust ledger, starting from the trust policy's prior, and evidence with a
+          ``half_life`` fades with age.
+        * Premises from independent origins combine by noisy-OR: ``1 - (1 - c1)(1 - c2)...``.
+          Sources sharing an origin count once (the most confident one).
+        * A derived step counts ``step * min(antecedents)``: rules and re-executed formulas are
+          mechanical (rule-level trust); an unverified model step uses the model's learned
+          reliability times its stated certainty.
+        * With several valid justifications, the strongest one wins.
+
+        See the confidence guide in the documentation for worked examples.
         """
         node = self._resolve(key_or_ref)
-        memo: dict[str, float] = {}
+        now = self._confidence_time()
+        epoch = (self._version, self.ledger.version, id(self.trust), now if self._decaying else None)
+        if epoch != self._conf_epoch:
+            self._conf_cache, self._conf_epoch = {}, epoch
+        if node.ref not in self._conf_cache:
+            self._compute_confidence(node.ref, now)
+        return self._conf_cache[node.ref]
 
-        def conf(n: _Node) -> float:
-            if n.ref in memo:
-                return memo[n.ref]
-            if n.status is not Status.IN or n.support is None:
-                memo[n.ref] = 0.0
-                return 0.0
-            j = n.support
-            if j.is_premise:
-                value = j.confidence
-            else:
-                ante = [conf(self._nodes[a]) for a in j.antecedents]
-                value = j.confidence * (min(ante) if ante else 1.0)
-            memo[n.ref] = value
-            return value
+    def reliability(self, source: Source | str) -> float:
+        """A source's learned reliability, starting from the trust policy's prior for it."""
+        src = Source.parse(source)
+        return self.ledger.reliability(src, prior=self.trust.confidence_for(src), at=self.now())
 
-        return conf(node)
+    def record_outcome(self, source: Source | str, correct: bool, *, reason: str = "") -> None:
+        """Tell the trust ledger that ``source`` turned out right or wrong (e.g. from a support
+        ticket or an audit). Confidence of every belief from that source updates accordingly."""
+        self.ledger.record(Source.parse(source), correct, at=self.now(), reason=reason)
+
+    def faded(self, threshold: float | None = None) -> list[Belief]:
+        """Believed premises whose decaying evidence has faded below ``threshold``.
+
+        Defaults to the trust policy's ``min_confidence``, the level below which the projector
+        hides beliefs from the model. :meth:`Agent.reverify` refreshes these.
+        """
+        limit = self.trust.min_confidence if threshold is None else threshold
+        result = []
+        for refs in self._revisions.values():
+            node = self._nodes[refs[-1]]
+            if node.status is not Status.IN or node.derived:
+                continue
+            if any(j.half_life is not None for j in node.justifications) and self.confidence(node.ref) < limit:
+                result.append(node.belief)
+        return result
 
     def valid_until(self, key_or_ref: str) -> datetime | None:
         """Earliest expiry along the current support chain, or ``None`` if nothing expires."""
@@ -922,6 +1014,8 @@ class BeliefBase:
                 parts.append(f"formula {j.formula}")
             if j.valid_until:
                 parts.append(f"valid until {j.valid_until.isoformat(timespec='seconds')}")
+            if j.half_life:
+                parts.append(f"half-life {j.half_life}, freshness {j.freshness(self.now()):.2f}")
             lines.append(f"  {marker} {j.id:<6} {j.kind.value:<8} " + "; ".join(parts))
         used_by = [d.ref for d in self.dependents(b.ref, transitive=False)]
         if used_by:
@@ -951,8 +1045,12 @@ class BeliefBase:
     # ======================================================================================
 
     def to_dict(self) -> dict[str, Any]:
-        """JSON-compatible snapshot. Rules and constraints are referenced by name, not serialized."""
-        return {
+        """JSON-compatible snapshot. Rules and constraints are referenced by name, not serialized.
+
+        The trust ledger is included when this base owns it. A shared ledger (passed with
+        ``ledger=``) belongs to all its bases, so save it separately with :meth:`TrustLedger.save`.
+        """
+        data = {
             "format": _FORMAT,
             "version": _FORMAT_VERSION,
             "beliefs": [
@@ -967,6 +1065,9 @@ class BeliefBase:
                 {"at": e.at.isoformat(), "action": e.action, "ref": e.ref, "detail": e.detail} for e in self._history
             ],
         }
+        if self._owns_ledger:
+            data["ledger"] = self.ledger.to_dict()
+        return data
 
     @classmethod
     def from_dict(
@@ -977,12 +1078,26 @@ class BeliefBase:
         constraints: Iterable[Constraint] = (),
         trust: TrustPolicy | None = None,
         clock: Callable[[], datetime] | None = None,
+        ledger: TrustLedger | None = None,
     ) -> BeliefBase:
+        """Rebuild a base from :meth:`to_dict`. Pass ``ledger=`` to attach a shared trust ledger;
+        otherwise the snapshot's own ledger is restored, if it has one."""
         if data.get("format") != _FORMAT:
             raise ValueError("not a Corollary belief base snapshot")
-        if int(data.get("version", 0)) > _FORMAT_VERSION:
+        version = int(data.get("version", 0))
+        if version > _FORMAT_VERSION:
             raise ValueError(f"snapshot version {data['version']} is newer than this library supports")
-        kb = cls(trust=trust, clock=clock, rules=rules, constraints=constraints)
+        if ledger is None and data.get("ledger"):
+            kb = cls(
+                trust=trust,
+                clock=clock,
+                rules=rules,
+                constraints=constraints,
+                ledger=TrustLedger.from_dict(data["ledger"]),
+            )
+            kb._owns_ledger = True
+        else:
+            kb = cls(trust=trust, clock=clock, rules=rules, constraints=constraints, ledger=ledger)
         for item in data["beliefs"]:
             belief = Belief.from_dict(item["belief"])
             node = _Node(belief, retracted=bool(item.get("retracted")), retract_reason=item.get("retract_reason", ""))
@@ -991,6 +1106,8 @@ class BeliefBase:
         max_id = 0
         for raw in data["justifications"]:
             j = Justification.from_dict(raw)
+            if version < 2:
+                j = kb._migrate_v1_justification(j)
             kb._link(kb._nodes[j.conclusion], j)
             if j.id[1:].isdigit():
                 max_id = max(max_id, int(j.id[1:]))
@@ -1005,6 +1122,14 @@ class BeliefBase:
         kb._hints.clear()
         kb._reasons = dict(data.get("reasons", {}))  # relabeling on load is not a real change
         return kb
+
+    def _migrate_v1_justification(self, j: Justification) -> Justification:
+        """Version 1 stored model steps with the model's trust folded into ``confidence``; version 2
+        stores only the step's certainty and applies the model's (learned) reliability on top."""
+        if j.kind is not JustificationKind.MODEL or j.source is None:
+            return j
+        base = self.trust.sources.get("rule", 1.0) if j.formula else self.trust.confidence_for(j.source)
+        return dataclasses.replace(j, confidence=min(1.0, j.confidence / base) if base else j.confidence)
 
     def save(self, path: str | os.PathLike[str]) -> None:
         """Write a JSON snapshot. Values must be JSON-serializable."""
@@ -1056,6 +1181,9 @@ class BeliefBase:
         self._hints.pop(node.ref, None)
 
     def _link(self, node: _Node, j: Justification) -> None:
+        self._version += 1
+        if j.half_life is not None:
+            self._decaying = True
         node.justifications.append(j)
         self._justifications[j.id] = j
         for a in j.antecedents:
@@ -1066,6 +1194,7 @@ class BeliefBase:
             self._expiring.add(node.ref)
 
     def _unlink(self, node: _Node, j: Justification) -> None:
+        self._version += 1
         node.justifications.remove(j)
         del self._justifications[j.id]
         for a in j.antecedents:
@@ -1086,6 +1215,7 @@ class BeliefBase:
         formula: str | None = None,
         confidence: float = 1.0,
         valid_until: datetime | None = None,
+        half_life: timedelta | None = None,
         note: str = "",
         extra_seeds: Iterable[str] = (),
         created: bool = False,
@@ -1104,6 +1234,7 @@ class BeliefBase:
             formula=formula,
             confidence=confidence,
             valid_until=valid_until,
+            half_life=half_life,
             note=note,
             created_at=self.now(),
         )
@@ -1340,6 +1471,7 @@ class BeliefBase:
         return components
 
     def _relabel(self, seeds: Iterable[str]) -> None:
+        self._version += 1
         region = self._downstream(seeds)
         if not region:
             return
@@ -1398,6 +1530,128 @@ class BeliefBase:
                             changed = True
                             break
         return order
+
+    # ======================================================================================
+    # Internals: confidence and the trust ledger
+    # ======================================================================================
+
+    def _confidence_time(self) -> datetime:
+        # With decay, confidence depends on time. Millisecond granularity lets repeated queries
+        # in one step share the cache without any meaningful loss of precision.
+        now = self.now()
+        return now.replace(microsecond=now.microsecond // 1000 * 1000) if self._decaying else now
+
+    def _compute_confidence(self, root: str, now: datetime) -> None:
+        """Fill the cache for ``root`` and everything its confidence depends on.
+
+        Confidence is the least fixpoint of the per-belief equations, computed by iterating from
+        zero. Every operation is monotone and never amplifies its inputs (min, max, products of
+        values in [0, 1], noisy-OR over premises only), so support cycles cannot inflate values
+        and iteration converges.
+        """
+        order: list[str] = []
+        seen: set[str] = set()
+        stack = [root]
+        while stack:
+            ref = stack.pop()
+            if ref in seen or ref in self._conf_cache:
+                continue
+            seen.add(ref)
+            order.append(ref)
+            node = self._nodes[ref]
+            if node.status is Status.IN:
+                for j in node.justifications:
+                    if self._valid(j, now):
+                        stack.extend(j.antecedents)
+        order.reverse()  # dependencies first, so most graphs settle in one pass
+        values = dict.fromkeys(order, 0.0)
+
+        def get(ref: str) -> float:
+            cached = self._conf_cache.get(ref)
+            return cached if cached is not None else values.get(ref, 0.0)
+
+        for _ in range(len(order) + 2):
+            changed = False
+            for ref in order:
+                value = self._node_confidence(self._nodes[ref], get, now)
+                if abs(value - values[ref]) > 1e-12:
+                    values[ref] = value
+                    changed = True
+            if not changed:
+                break
+        self._conf_cache.update(values)
+
+    def _node_confidence(self, node: _Node, get: Callable[[str], float], now: datetime) -> float:
+        if node.status is not Status.IN:
+            return 0.0
+        by_origin: dict[str, float] = {}
+        derived = 0.0
+        for j in node.justifications:
+            if not self._valid(j, now):
+                continue
+            if j.is_premise:
+                origin = j.source.origin if j.source is not None else j.id
+                by_origin[origin] = max(by_origin.get(origin, 0.0), self._premise_confidence(j, now))
+            else:
+                weakest = min((get(a) for a in j.antecedents), default=1.0)
+                derived = max(derived, self._step_confidence(j, now) * weakest)
+        if not by_origin:
+            premises = 0.0
+        elif self.trust.corroboration:
+            doubt = 1.0
+            for value in by_origin.values():
+                doubt *= 1.0 - value
+            premises = 1.0 - doubt
+        else:
+            premises = max(by_origin.values())
+        return max(premises, derived)
+
+    def _premise_confidence(self, j: Justification, now: datetime) -> float:
+        base = j.confidence
+        if j.source is not None:
+            base = self.ledger.reliability(j.source, prior=base, at=now)
+        return base * j.freshness(now)
+
+    def _step_confidence(self, j: Justification, now: datetime) -> float:
+        if j.kind is JustificationKind.RULE:
+            return j.confidence
+        if j.formula is not None or j.source is None:
+            # A formula the runtime re-executed is a mechanical step.
+            return self.trust.sources.get("rule", 1.0) * j.confidence
+        prior = self.trust.confidence_for(j.source)
+        return self.ledger.reliability(j.source, prior=prior, at=now) * j.confidence
+
+    def _accountable_sources(self, node: _Node) -> list[Source]:
+        """Sources whose mistake a wrong belief would be: premise sources, and the model behind
+        an unverified claim. Rules and re-executed formulas are never at fault."""
+        found: dict[str, Source] = {}
+        for j in node.justifications:
+            if j.source is None:
+                continue
+            if j.is_premise or (j.kind is JustificationKind.MODEL and j.formula is None):
+                found.setdefault(j.source.id, j.source)
+        return list(found.values())
+
+    def _record_outcomes(self, nodes: Iterable[_Node], *, correct: bool, reason: str) -> None:
+        now = self.now()
+        for node in nodes:
+            for source in self._accountable_sources(node):
+                self.ledger.record(source, correct, at=now, reason=f"{node.ref}: {reason}")
+
+    def _credit_confirmation(self, node: _Node, source: Source) -> None:
+        """An independent source agreeing with an existing premise is evidence both were right."""
+        now = self.now()
+        others = {
+            j.source.id: j.source
+            for j in node.justifications
+            if j.is_premise and j.source is not None and j.source.origin != source.origin and self._valid(j, now)
+        }
+        if not others:
+            return
+        reason = f"{node.ref}: independently confirmed"
+        for other in others.values():
+            self.ledger.record(other, True, at=now, reason=reason)
+        self.ledger.record(source, True, at=now, reason=reason)
 
     def _out_reason(self, node: _Node, support: Justification | None) -> str:
         if node.retracted:

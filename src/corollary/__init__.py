@@ -31,6 +31,7 @@ from .errors import (
 )
 from .justification import Justification, JustificationKind
 from .kernel import BeliefBase, Derived, Event, Rederivation
+from .ledger import Outcome, SourceRecord, TrustLedger
 from .models import AnthropicModel, CallableModel, Model, OpenAIModel, ScriptedModel
 from .projector import Projection, Projector
 from .proof import Proof, ProofDiff, ProofStep
@@ -74,6 +75,7 @@ __all__ = [
     "NarrowResult",
     "NotBelievedError",
     "OpenAIModel",
+    "Outcome",
     "Pending",
     "PreferHigherConfidence",
     "PreferNewest",
@@ -93,10 +95,12 @@ __all__ = [
     "Severity",
     "Source",
     "SourceKind",
+    "SourceRecord",
     "Status",
     "StepRecord",
     "Tool",
     "ToolCall",
+    "TrustLedger",
     "TrustPolicy",
     "UnknownBeliefError",
     "UnresolvedConflictError",

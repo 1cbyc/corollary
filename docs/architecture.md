@@ -98,9 +98,19 @@ Otherwise a new revision is created. Rounds repeat until no more progress is mad
 
 ### Confidence
 
-Effective confidence follows the current support: a premise's justification confidence, or a derived
-step's confidence times the minimum of its antecedents'. Support chains are acyclic by construction, so
-this is well-defined.
+Effective confidence is computed over every valid justification of a belief:
+
+- premises from independent origins combine by noisy-OR, each counting its source's learned reliability
+  (from the `TrustLedger`) times its freshness;
+- a derived justification counts its step's confidence times the minimum of its antecedents';
+- the belief takes the strongest of these.
+
+Because non-support justifications can form cycles, confidence is computed as the **least fixpoint** of
+these equations, by iterating from zero over the antecedent closure of the queried belief. Every operation
+is monotone and never amplifies its inputs (min, max, products of values in [0, 1], and noisy-OR over
+premises only), so cycles can't inflate values and the iteration converges. Results are cached, keyed on
+the graph version, the ledger version, the trust policy and, when any evidence decays, the time (at
+millisecond granularity). See [Confidence](guides/confidence.md) for the model itself.
 
 ## Guarantees
 

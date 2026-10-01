@@ -36,6 +36,10 @@ class Tool:
         trust: A level from the trust policy (``"high"``, ``"medium"``, ``"low"``) or a number.
         ttl: How long a result stays valid. Expired results are hidden from the model and can be
             refreshed with :meth:`Agent.reverify`.
+        half_life: Make each result's confidence fade, halving every ``half_life``, without
+            changing its status. Faded results are refreshed by :meth:`Agent.reverify` too.
+        origin: Independence group, e.g. ``"sec_database"`` for every tool reading that database.
+            Tools sharing an origin count once when they agree.
     """
 
     name: str
@@ -43,6 +47,8 @@ class Tool:
     description: str = ""
     trust: str | float = "high"
     ttl: timedelta | None = None
+    half_life: timedelta | None = None
+    origin: str | None = None
     signature: inspect.Signature = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -105,6 +111,8 @@ def tool(
     name: str | None = None,
     trust: str | float = "high",
     ttl: timedelta | None = None,
+    half_life: timedelta | None = None,
+    origin: str | None = None,
     description: str | None = None,
 ) -> Callable[[Callable[..., Any]], Tool]: ...
 
@@ -116,6 +124,8 @@ def tool(
     name: str | None = None,
     trust: str | float = "high",
     ttl: timedelta | None = None,
+    half_life: timedelta | None = None,
+    origin: str | None = None,
     description: str | None = None,
 ) -> Tool | Callable[[Callable[..., Any]], Tool]:
     """Declare a tool. Works bare (``@tool``) or with options (``@tool(trust="high", ttl=...)``).
@@ -125,7 +135,15 @@ def tool(
 
     def wrap(func: Callable[..., Any]) -> Tool:
         doc = description if description is not None else inspect.cleandoc(func.__doc__ or "").split("\n\n")[0]
-        return Tool(name=name or func.__name__, fn=func, description=doc.replace("\n", " "), trust=trust, ttl=ttl)
+        return Tool(
+            name=name or func.__name__,
+            fn=func,
+            description=doc.replace("\n", " "),
+            trust=trust,
+            ttl=ttl,
+            half_life=half_life,
+            origin=origin,
+        )
 
     return wrap(fn) if fn is not None else wrap
 

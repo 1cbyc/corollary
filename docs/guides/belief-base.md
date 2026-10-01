@@ -12,7 +12,8 @@ kb = BeliefBase()
 
 Constructor options: `trust=` a [`TrustPolicy`](#trust-policy), `clock=` a zero-argument callable
 returning a timezone-aware `datetime` (inject one for deterministic tests), `rules=` and `constraints=`
-to register up front.
+to register up front, and `ledger=` a [`TrustLedger`](confidence.md#2-learned-reliability-the-trust-ledger)
+to share across bases.
 
 ## Asserting premises
 
@@ -123,6 +124,16 @@ kb.restore("revenue:Q2")  # undo the latest retraction
 Retraction takes effect immediately: every dependent goes `OUT` before `retract` returns. Nothing is
 deleted. Retracted revisions remain queryable with their reason.
 
+Say whose mistake it was with `fault`, so the trust ledger can learn from it:
+
+```python
+kb.retract("revenue:Q2", reason="restated in 10-K/A")  # fault="none": the world changed
+kb.retract("price:ACME", reason="scraper returned stale data", fault="source")  # the source was wrong
+```
+
+With `fault="source"`, every source accountable for the belief is recorded as wrong, and its
+reliability (and the confidence of everything else it reported) drops. See [Confidence](confidence.md).
+
 ## Propagating changes
 
 ```python
@@ -218,8 +229,12 @@ kb = BeliefBase(trust=trust)
 | `overrides` | `{}` | exact `"kind:name"` entries, checked first |
 | `min_confidence` | 0.0 | beliefs below this are not shown to the model |
 | `source_rank` | human, tool, document, rule, model, assumption | order used by `PreferSource` |
+| `corroboration` | `True` | combine agreeing independent sources by noisy-OR |
 
 `TrustPolicy.from_mapping({"tool": 0.9, "human:alice": 1.0})` builds one from a flat mapping.
+
+The values in the policy are **priors**. The base's `TrustLedger` learns each source's actual
+reliability from outcomes and adjusts them over time; see [Confidence](confidence.md).
 
 ## History
 

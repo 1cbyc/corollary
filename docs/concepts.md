@@ -107,15 +107,18 @@ with a reason such as `lost support: revenue:Q2` or `re-derived: 9.7561`.
 
 ## Confidence
 
-Every belief has an **effective confidence**, computed along its current support:
+Every belief has an **effective confidence** between 0 and 1:
 
-- a premise's confidence comes from the [trust policy](guides/belief-base.md#trust-policy) for its source
-  (or an explicit `confidence=`);
-- a conclusion's confidence is its step's confidence times the weakest antecedent's.
+- a premise is trusted as much as its source has **proven** reliable. Reliability starts from the
+  [trust policy](guides/belief-base.md#trust-policy) and is learned by a **trust ledger** from the
+  source's track record (retractions blamed on it, conflicts a person settled, independent confirmations);
+- evidence with a **half-life** fades with age;
+- **independent sources that agree** reinforce each other (noisy-OR);
+- a conclusion is its step's confidence times its **weakest input**. Rules and re-executed formulas are
+  mechanical steps; an unverified model step uses the model's learned reliability.
 
-Steps the runtime can check mechanically (rules, and model claims with a re-executed formula) carry
-rule-level trust (1.0 by default). Unchecked model steps carry the model's trust (0.9 by default), scaled by
-any confidence the model stated. `OUT` beliefs have confidence 0.
+`OUT` beliefs have confidence 0. The full model, with worked examples, is in
+[Confidence](guides/confidence.md).
 
 ## Validity windows
 

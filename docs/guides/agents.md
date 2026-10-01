@@ -31,6 +31,8 @@ report = agent.run("Compare Q2 and Q3 revenue and assess the growth trend.")
 | `resolver` | `None` | Applied to open conflicts before each step; see [Conflicts](conflicts.md) |
 | `max_steps` | `12` | Model calls per `run()` |
 | `repair_attempts` | `2` | Model calls per belief during `repair()` |
+| `self_consistency` | `1` | Samples per unverified claim; see [self-consistency](confidence.md#6-self-consistency-asking-more-than-once) |
+| `learn_from_checks` | `True` | Record verified formulas and citations in the trust ledger as the model's track record |
 | `system_prompt` | `SYSTEM_PROMPT` | The contract instructions; override with care |
 
 ## The run loop
@@ -89,6 +91,8 @@ def quote(symbol: str) -> float:
 - **`ttl`** sets how long each result stays valid. See [Time and validity](time.md).
 - **Arguments are validated** against the function signature before the call. Unknown tools, bad
   arguments and exceptions raised by the tool are rejected and reported to the model.
+- **`half_life`** makes each result's confidence fade, and **`origin`** declares an independence group
+  (tools reading the same database). See [Confidence](confidence.md).
 - **The result becomes a premise** with source `tool:quote(symbol='ACME')`, stored under the key the model
   chose, or `quote:ACME` by default.
 - **Calling the same tool with the same arguments again** supersedes the previous result instead of
@@ -166,9 +170,10 @@ Anything that can't be re-derived is listed in `result.pending` with the reason.
 result = agent.reverify()
 ```
 
-For every premise that is `OUT` only because its evidence expired, `reverify()` re-runs the tool call that
-produced it, with the same arguments, then calls `repair()`. A refreshed value equal to the old one renews
-the evidence in place, so its dependents come back without any model calls.
+For every premise that is `OUT` because its evidence expired (`ttl`), or still `IN` but faded below
+`TrustPolicy.min_confidence` (`half_life`), `reverify()` re-runs the tool call that produced it, with the
+same arguments, then calls `repair()`. A refreshed value equal to the old one renews the evidence in place,
+so its dependents come back without any model calls.
 
 ## Narrowing dependencies by ablation
 

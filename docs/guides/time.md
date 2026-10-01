@@ -24,6 +24,21 @@ def quote(symbol: str) -> float: ...
 `kb.valid_until(key)` returns the earliest expiry along a belief's current support chain. A conclusion is
 only as fresh as its stalest input.
 
+## Fading instead of expiring
+
+`ttl` is all or nothing: the evidence is valid, then it isn't. A **half-life** makes it fade gradually
+instead. The belief stays `IN`, but its confidence halves every period:
+
+```python
+@tool(ttl=timedelta(minutes=5), half_life=timedelta(minutes=1))
+def quote(symbol: str) -> float: ...
+```
+
+The two combine: the quote loses half its confidence every minute and is invalid after five, whatever
+happens. Faded evidence is hidden from the model once it drops below `TrustPolicy.min_confidence`,
+`kb.faded()` lists it, and `agent.reverify()` refreshes it. See
+[Confidence: freshness](confidence.md#3-freshness-evidence-that-fades) for the numbers.
+
 ## Expiry
 
 Expiry is checked against the base's clock:
@@ -43,7 +58,7 @@ kb.stale()  # latest revisions OUT only because all their evidence expired
 agent.reverify()  # re-run the tool calls behind them, then repair()
 ```
 
-`reverify()` re-executes each stale premise's tool call with its original arguments:
+`reverify()` re-executes each stale (or faded) premise's tool call with its original arguments:
 
 - **Same value:** the evidence is renewed in place. The belief and everything that depended on it come
   back `IN` with no new revisions and no model calls.

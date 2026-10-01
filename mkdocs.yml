@@ -58,6 +58,7 @@ nav:
       - Agents: guides/agents.md
       - The claim contract: guides/contract.md
       - Verification: guides/verification.md
+      - Confidence: guides/confidence.md
       - Conflicts and resolution: guides/conflicts.md
       - Documents and citations: guides/documents.md
       - Time and validity: guides/time.md

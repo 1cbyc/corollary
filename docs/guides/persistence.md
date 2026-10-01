@@ -17,7 +17,20 @@ kb = BeliefBase.load("acme.beliefs.json", rules=[growth, trend])
 - every justification, with its antecedents, `unless` keys, recipe inputs, formula, source, confidence and
   validity window;
 - registered documents;
-- the change reasons and the event history.
+- the change reasons and the event history;
+- the trust ledger, **if the base owns it** (it was created without `ledger=`).
+
+## Shared trust ledgers
+
+A [trust ledger](confidence.md#sharing-a-ledger) shared by many bases belongs to all of them, so it is
+not stored in any one snapshot. Save it on its own and attach it when loading:
+
+```python
+ledger.save("trust.json")
+
+ledger = TrustLedger.load("trust.json")
+kb = BeliefBase.load("customer-42.beliefs.json", ledger=ledger)
+```
 
 Labels (`IN` / `OUT`) are **not** stored: they are recomputed on load from the graph, so a snapshot can't
 contain an inconsistent labeling. Loading a snapshot doesn't count as a change, so `kb.changes()` is
@@ -48,8 +61,8 @@ data = kb.to_dict()  # JSON-compatible dict
 copy = BeliefBase.from_dict(data, rules=[growth])
 ```
 
-The snapshot format is versioned (`"format": "corollary.beliefbase"`, `"version": 1`). Loading a
-snapshot from a newer format version raises `ValueError`.
+The snapshot format is versioned (`"format": "corollary.beliefbase"`, currently `"version": 2`). Older
+snapshots are migrated on load; loading a snapshot from a newer format version raises `ValueError`.
 
 ## Roadmap
 

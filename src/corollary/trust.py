@@ -33,6 +33,8 @@ class TrustPolicy:
         min_confidence: Beliefs whose effective confidence is below this are hidden from the
             model by the projector.
         source_rank: Order used by :class:`~corollary.resolvers.PreferSource`, most trusted first.
+        corroboration: Combine agreeing premises from independent origins by noisy-OR. When off,
+            the most confident source counts alone.
     """
 
     sources: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_SOURCES))
@@ -40,6 +42,7 @@ class TrustPolicy:
     overrides: dict[str, float] = field(default_factory=dict)
     min_confidence: float = 0.0
     source_rank: tuple[str, ...] = ("human", "tool", "document", "rule", "model", "assumption")
+    corroboration: bool = True
 
     def __post_init__(self) -> None:
         for table in (self.sources, self.tool_levels, self.overrides):

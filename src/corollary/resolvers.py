@@ -85,10 +85,14 @@ class AskHuman:
 
     The callback receives the conflict and returns the belief (or ref) to *keep*, or ``None`` to
     leave the conflict open. For constraint conflicts it should return the belief to *retract*.
+
+    A person's decision is treated as ground truth, so by default the trust ledger learns from it
+    (``learn=True``): the losing sources count as wrong, the winning ones as right.
     """
 
-    def __init__(self, ask: Callable[[Conflict], Belief | str | None]) -> None:
+    def __init__(self, ask: Callable[[Conflict], Belief | str | None], *, learn: bool = True) -> None:
         self.ask = ask
+        self.learn = learn
 
     def __call__(self, conflict: Conflict, kb: BeliefBase) -> Resolution | None:
         choice = self.ask(conflict)
@@ -101,5 +105,12 @@ class AskHuman:
                 raise ValueError(f"{ref!r} does not identify one side of {conflict.id}")
             ref = matches[0]
         if conflict.kind is ConflictKind.CONSTRAINT:
-            return Resolution(conflict.id, (ref,), f"retracted by human decision on {conflict.id}")
-        return Resolution(conflict.id, tuple(r for r in conflict.refs if r != ref), f"human decision on {conflict.id}")
+            return Resolution(
+                conflict.id, (ref,), f"retracted by human decision on {conflict.id}", authoritative=self.learn
+            )
+        return Resolution(
+            conflict.id,
+            tuple(r for r in conflict.refs if r != ref),
+            f"human decision on {conflict.id}",
+            authoritative=self.learn,
+        )

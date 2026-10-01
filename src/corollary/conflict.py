@@ -78,11 +78,16 @@ class Conflict:
 
 @dataclass(frozen=True)
 class Resolution:
-    """What a resolver decided: which belief revisions to retract, and why."""
+    """What a resolver decided: which belief revisions to retract, and why.
+
+    ``authoritative`` marks a decision as ground truth (a person checked it), so the trust ledger
+    learns from it: retracted sides count as wrong, kept sides as right.
+    """
 
     conflict_id: str
     retract: tuple[str, ...]
     reason: str
+    authoritative: bool = False
 
 
 Resolver = Callable[["Conflict", Any], "Resolution | None"]

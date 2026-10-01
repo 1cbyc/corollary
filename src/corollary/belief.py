@@ -125,12 +125,22 @@ class Source:
     # -- constructors ---------------------------------------------------------------------
 
     @classmethod
-    def tool(cls, name: str, args: Mapping[str, Any] | None = None) -> Source:
-        return cls(SourceKind.TOOL, name, {"args": dict(args)} if args else {})
+    def tool(cls, name: str, args: Mapping[str, Any] | None = None, *, origin: str | None = None) -> Source:
+        detail: dict[str, Any] = {}
+        if args:
+            detail["args"] = dict(args)
+        if origin:
+            detail["origin"] = origin
+        return cls(SourceKind.TOOL, name, detail)
 
     @classmethod
-    def document(cls, name: str, quote: str | None = None) -> Source:
-        return cls(SourceKind.DOCUMENT, name, {"quote": quote} if quote else {})
+    def document(cls, name: str, quote: str | None = None, *, origin: str | None = None) -> Source:
+        detail: dict[str, Any] = {}
+        if quote:
+            detail["quote"] = quote
+        if origin:
+            detail["origin"] = origin
+        return cls(SourceKind.DOCUMENT, name, detail)
 
     @classmethod
     def human(cls, name: str = "user") -> Source:
@@ -168,6 +178,24 @@ class Source:
     def grounded(self) -> bool:
         """True for tools, documents and humans: sources outside the model."""
         return self.kind in GROUNDED_KINDS
+
+    @property
+    def id(self) -> str:
+        """``kind:name``: the identity under which a source's reliability is learned."""
+        return f"{self.kind.value}:{self.name}"
+
+    @property
+    def origin(self) -> str:
+        """Independence group. Sources with the same origin share an underlying origin of truth
+        (two tools reading the same database), so their agreement counts once. Defaults to ``id``."""
+        origin = self.detail.get("origin")
+        return str(origin) if origin else self.id
+
+    def with_origin(self, origin: str | None) -> Source:
+        """A copy of this source declaring an independence group."""
+        if not origin:
+            return self
+        return Source(self.kind, self.name, {**self.detail, "origin": origin})
 
     @property
     def args(self) -> dict[str, Any]:

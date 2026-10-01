@@ -409,3 +409,111 @@ def test_repair_follows_dependencies_even_with_identical_timestamps(clock: Clock
     assert [c.key for c in result.added] == ["revenue:Q2", "growth:Q3_vs_Q2", "trend", "answer"]
     assert report.answer == "Q3 grew 9.76%: strong."
     assert "Re-derive the belief `growth:Q3_vs_Q2`" in model.calls[2].prompt
+
+
+# -- confidence: learning from checks, self-consistency, decay ----------------------------------------
+
+
+def test_verified_formulas_and_citations_teach_the_ledger() -> None:
+    model = ScriptedModel(
+        [
+            FETCH,
+            actions(
+                claim("g1", 4.651162790697675, ["revenue:Q2", "revenue:Q3"], formula=GROWTH),
+                claim("g2", 99.0, ["revenue:Q2", "revenue:Q3"], formula=GROWTH),
+                answer("done", ["g1"]),
+            ),
+        ]
+    )
+    agent = Agent(model, tools=[get_revenue])
+    agent.run("t")
+    record = agent.kb.ledger.record_of("model:scripted")
+    assert (record.correct, record.wrong) == (1, 1)
+
+
+def test_learning_from_checks_can_be_disabled() -> None:
+    model = ScriptedModel([FETCH, actions(claim("g", 1.0, ["revenue:Q2", "revenue:Q3"], formula=GROWTH)), ANALYZE])
+    agent = Agent(model, tools=[get_revenue], learn_from_checks=False)
+    agent.run("t")
+    assert agent.kb.ledger.sources() == []
+
+
+def test_citation_outcomes() -> None:
+    doc = "Total revenue for Q2 was $4.3 billion."
+    model = ScriptedModel(
+        [
+            actions(
+                {
+                    "type": "cite",
+                    "document": "10-K",
+                    "quote": "Total revenue for Q2 was $4.3 billion",
+                    "key": "revenue:Q2",
+                    "value": 4.3e9,
+                },
+                {
+                    "type": "cite",
+                    "document": "10-K",
+                    "quote": "Total revenue for Q2 was $5 billion",
+                    "key": "fake",
+                    "value": 5e9,
+                },
+                {"type": "cite", "document": "missing", "quote": "x", "key": "k", "value": 1},
+            ),
+            actions(answer("Q2 revenue was $4.3 billion.", ["revenue:Q2"])),
+        ]
+    )
+    agent = Agent(model, documents={"10-K": doc})
+    agent.run("t")
+    record = agent.kb.ledger.record_of("model:scripted")
+    assert (record.correct, record.wrong) == (1, 1), "an unknown document is a format error, not a wrong fact"
+
+
+def test_self_consistency_scores_unverified_claims() -> None:
+    def check(answer_value: str):  # type: ignore[no-untyped-def]
+        def respond(prompt: str) -> dict[str, Any]:
+            assert "Derive the belief `trend`" in prompt
+            assert "modest" not in prompt.split("# Beliefs")[0], "samples never see the original answer"
+            return actions(claim("trend", answer_value, ["growth:Q3_vs_Q2"]))
+
+        return respond
+
+    model = ScriptedModel([FETCH, ANALYZE, check("modest"), check("strong")])
+    agent = Agent(model, tools=[get_revenue], dependencies="declared", self_consistency=3)
+    agent.run("t")
+    # 2 of 3 samples agree: certainty (2 + 1) / (3 + 1)
+    assert agent.kb.support("trend").confidence == pytest.approx(0.75)  # type: ignore[union-attr]
+    assert agent.kb.confidence("trend") == pytest.approx(0.9 * 0.75 * 0.99)
+    assert model.remaining == 0, "the formula claim and the answer were not sampled"
+
+
+def test_self_consistency_validation() -> None:
+    with pytest.raises(ValueError):
+        Agent(ScriptedModel(), self_consistency=0)
+
+
+def test_reverify_refreshes_faded_tool_results(clock: Clock) -> None:
+    calls = []
+
+    @tool(half_life=timedelta(minutes=1), origin="exchange")
+    def price(symbol: str) -> float:
+        calls.append(symbol)
+        return 101.0
+
+    model = ScriptedModel(
+        [
+            actions({"type": "call_tool", "tool": "price", "args": {"symbol": "ACME"}, "key": "price:ACME"}),
+            actions(answer("ACME trades at 101.", ["price:ACME"])),
+        ]
+    )
+    from corollary import TrustPolicy
+
+    agent = Agent(model, BeliefBase(clock=clock, trust=TrustPolicy(min_confidence=0.5)), tools=[price])
+    report = agent.run("Price of ACME?")
+    assert agent.kb["price:ACME"].source.origin == "exchange"
+    clock.advance(seconds=70)
+    assert agent.kb.confidence("price:ACME") < 0.5
+    assert not report.stale, "faded, not expired: still believed"
+    agent.reverify()
+    assert calls == ["ACME", "ACME"]
+    assert agent.kb.confidence("price:ACME") == pytest.approx(0.99)
+    assert model.remaining == 0

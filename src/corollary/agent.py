@@ -22,7 +22,7 @@ from .belief import Belief, Source, SourceKind, Status, format_value, validate_k
 from .changes import Change, Propagation
 from .conflict import Resolver
 from .contract import SYSTEM_PROMPT, Action, Answer, Cite, Claim, ToolCall, parse_response
-from .errors import ContractViolation, CorollaryError, FormulaError, ModelError
+from .errors import CitationError, ContractViolation, CorollaryError, FormulaError, ModelError
 from .formula import evaluate, formula_keys
 from .justification import Justification, JustificationKind
 from .kernel import BeliefBase, Derived, Rederivation
@@ -146,6 +146,11 @@ class Agent:
         resolver: Applied to open conflicts before every step; see :mod:`corollary.resolvers`.
         max_steps: Model calls allowed per :meth:`run`.
         repair_attempts: Model calls allowed per belief during :meth:`repair`.
+        self_consistency: Ask the model ``k`` times for every unverified claim (no formula) and use
+            the agreement rate as that step's certainty. ``1`` (default) disables it; each extra
+            sample is one model call.
+        learn_from_checks: Record the model's verified work (formulas and citations that check
+            out, or don't) in the trust ledger, so its reliability is measured rather than assumed.
     """
 
     def __init__(
@@ -162,8 +167,12 @@ class Agent:
         resolver: Resolver | None = None,
         max_steps: int = 12,
         repair_attempts: int = 2,
+        self_consistency: int = 1,
+        learn_from_checks: bool = True,
         system_prompt: str = SYSTEM_PROMPT,
     ) -> None:
+        if self_consistency < 1:
+            raise ValueError("self_consistency must be at least 1")
         self.model = resolve_model(model)
         self.kb = beliefs if beliefs is not None else BeliefBase(trust=trust)
         if trust is not None:
@@ -181,6 +190,8 @@ class Agent:
         self.resolver = resolver
         self.max_steps = max_steps
         self.repair_attempts = repair_attempts
+        self.self_consistency = self_consistency
+        self.learn_from_checks = learn_from_checks
         self.system_prompt = system_prompt
 
     @property
@@ -232,9 +243,19 @@ class Agent:
         if isinstance(action, ToolCall):
             return self._apply_tool_call(action, state)
         if isinstance(action, Cite):
-            belief = self.kb.cite(
-                validate_key(action.key), action.value, document=action.document, quote=action.quote, claim=action.claim
-            )
+            try:
+                belief = self.kb.cite(
+                    validate_key(action.key),
+                    action.value,
+                    document=action.document,
+                    quote=action.quote,
+                    claim=action.claim,
+                )
+            except CitationError as exc:
+                if not str(exc).startswith("unknown document"):
+                    self._learn(False, f"citation rejected: {exc}")
+                raise
+            self._learn(True, f"citation of {action.document!r} verified")
             return f"cited {belief.ref} from {action.document!r}"
         if isinstance(action, Claim):
             if action.key == answer_key:
@@ -280,7 +301,7 @@ class Agent:
         return f"called {t.name} -> {belief.ref} = {format_value(value)}"
 
     def _record_tool_result(self, t: Tool, args: Mapping[str, Any], key: str, value: Any, claim: str) -> Belief:
-        source = Source.tool(t.name, args)
+        source = Source.tool(t.name, args, origin=t.origin)
         # A fresh result from the same call replaces the old observation instead of conflicting with it.
         supersede = any(b.source == source for b in self.kb.beliefs(Status.IN) if b.key == key)
         return self.kb.assert_(
@@ -290,6 +311,7 @@ class Agent:
             claim=claim,
             confidence=self.kb.trust.tool_confidence(t.trust),
             ttl=t.ttl,
+            half_life=t.half_life,
             supersede=supersede,
         )
 
@@ -320,10 +342,13 @@ class Agent:
                 or not isinstance(value, (int, float))
                 or not values_equal(computed, value, rel_tol=1e-6, abs_tol=1e-9)
             ):
+                self._learn(False, f"formula for {key!r} did not reproduce the stated value")
                 raise ContractViolation(
                     f"formula {formula!r} evaluates to {format_value(computed)}, "
                     f"but the claim states {format_value(value)}"
                 )
+            else:
+                self._learn(True, f"formula for {key!r} verified")
         if value is None:
             raise ContractViolation(f"claim {key!r} has no value")
         existing = self.kb.get(key)
@@ -344,6 +369,9 @@ class Agent:
                     "derive it again next turn"
                 )
             antecedents = visible
+        certainty = self._certainty(confidence)
+        if self.self_consistency > 1 and formula is None and not is_answer:
+            certainty *= self._consistency(key, value, note, [b.key for b in antecedents])
         return self.kb.justify(
             key,
             value,
@@ -351,20 +379,34 @@ class Agent:
             source=Source.model(self.model.name),
             claim=claim,
             formula=formula,
-            confidence=self._step_confidence(formula, confidence),
+            confidence=certainty,
             inputs=[b.key for b in antecedents],
             note=note,
         )
 
-    def _step_confidence(self, formula: str | None, stated: float | None) -> float:
-        """Confidence of one model step. A formula the runtime re-executed is a mechanical step
-        and carries rule-level trust; otherwise the model's trust applies, scaled by any
-        confidence the model stated."""
-        if formula:
-            base = self.kb.trust.sources.get(SourceKind.RULE.value, 1.0)
-        else:
-            base = self.kb.trust.confidence_for(Source.model(self.model.name))
-        return base * (stated if stated is not None else 1.0)
+    @staticmethod
+    def _certainty(stated: float | None) -> float:
+        """The step's own certainty. The model's reliability (learned in the trust ledger) and
+        rule-level trust for re-executed formulas are applied by the belief base on top."""
+        return stated if stated is not None else 1.0
+
+    def _consistency(self, key: str, value: Any, note: str, scope: list[str]) -> float:
+        """Ask for the same claim ``k - 1`` more times; return ``(agreeing + 1) / (k + 1)``.
+
+        Every sample sees the same beliefs but not the original answer. A claim the model
+        reproduces every time keeps its certainty; one it can't reproduce loses most of it.
+        """
+        k = self.self_consistency
+        agreeing = 1  # the original answer
+        for _ in range(k - 1):
+            sample = self._ask(key, note, scope, mode="check")
+            if sample is not None and _same_value(sample.value, value):
+                agreeing += 1
+        return (agreeing + 1) / (k + 1)
+
+    def _learn(self, correct: bool, reason: str) -> None:
+        if self.learn_from_checks:
+            self.kb.record_outcome(Source.model(self.model.name), correct, reason=reason)
 
     def _check_visible(self, key: str, state: _StepState) -> None:
         if key in state.claimed or state.projection.belief(key) is not None:
@@ -413,12 +455,14 @@ class Agent:
         return self.kb.propagate(rederive=self._rederive, include_kept=include_kept)
 
     def reverify(self, *, include_kept: bool = False) -> Propagation:
-        """Re-run the tool calls behind expired premises, then :meth:`repair`.
+        """Re-run the tool calls behind expired or faded premises, then :meth:`repair`.
 
-        A refreshed result equal to the old one renews the evidence in place, so nothing
-        downstream needs to be re-derived.
+        Expired premises are ``OUT`` (see ``ttl``); faded ones are still ``IN`` but their decaying
+        confidence has dropped below the trust policy's ``min_confidence`` (see ``half_life``). A
+        refreshed result equal to the old one renews the evidence in place, so nothing downstream
+        needs to be re-derived.
         """
-        for belief in self.kb.stale():
+        for belief in [*self.kb.stale(), *self.kb.faded()]:
             just = _latest_tool_premise(self.kb.justifications(belief.ref))
             if just is None or just.source is None:
                 continue
@@ -451,7 +495,7 @@ class Agent:
         for candidate in list(current):
             trial = [k for k in current if k != candidate]
             calls += 1
-            derived = self._ask(belief, just, trial, mode="ablate")
+            derived = self._ask(key, just.note or belief.claim, trial, mode="ablate")
             if derived is not None and _same_value(derived.value, belief.value):
                 current, pruned = trial, [*pruned, candidate]
         if pruned:
@@ -472,26 +516,41 @@ class Agent:
     def _rederive(self, request: Rederivation) -> Derived | None:
         if not request.inputs:
             return None
-        return self._ask(request.belief, request.justification, list(request.inputs), mode="rederive")
+        belief, just = request.belief, request.justification
+        return self._ask(
+            belief.key, just.note or belief.claim, list(request.inputs), mode="rederive", previous=belief.value
+        )
 
-    def _ask(self, belief: Belief, just: Justification, scope: list[str], *, mode: str) -> Derived | None:
-        """Ask the model for one claim about ``belief.key`` using only the beliefs in ``scope``."""
-        is_answer = just.note.startswith(_ANSWER_NOTE)
+    def _ask(self, key: str, note: str, scope: list[str], *, mode: str, previous: Any = None) -> Derived | None:
+        """Ask the model for one claim about ``key`` using only the beliefs in ``scope``.
+
+        ``mode`` is ``"rederive"`` (inputs changed; the previous value is mentioned), or
+        ``"ablate"`` / ``"check"`` (derive from scratch, without seeing any previous value).
+        """
+        is_answer = note.startswith(_ANSWER_NOTE)
         if mode == "rederive":
             intro = (
-                f"Re-derive the belief `{belief.key}`. It previously held {format_value(belief.value)}, but the "
+                f"Re-derive the belief `{key}`. It previously held {format_value(previous)}, but the "
                 "beliefs it was derived from have changed."
             )
         else:
             intro = (
-                f"Derive the belief `{belief.key}` using only the beliefs below. If they are not sufficient, "
+                f"Derive the belief `{key}` using only the beliefs below. If they are not sufficient, "
                 'respond with {"actions": []}.'
             )
         what = "the complete, updated answer text" if is_answer else "its value"
+        if is_answer:
+            subject = note  # the task, which doesn't contain the answer
+        elif mode == "rederive":
+            subject = f"`{key}`: {note}"
+        else:
+            # Deriving from scratch: the claim text states the old conclusion, so showing it would
+            # let the model copy it, and every ablation or consistency check would trivially agree.
+            subject = f"The belief to derive: `{key}`."
         lines = [
-            just.note if is_answer else f"`{belief.key}`: {just.note or belief.claim}",
+            subject,
             intro,
-            f'Respond with exactly one action of type "claim" for key `{belief.key}` whose "value" is {what}. '
+            f'Respond with exactly one action of type "claim" for key `{key}` whose "value" is {what}. '
             "Use only the beliefs listed below, and include a formula if the value is computed.",
         ]
         task = "\n\n".join(lines)
@@ -506,20 +565,20 @@ class Agent:
             except (ContractViolation, ModelError) as exc:
                 feedback = [str(exc)]
                 continue
-            claims = [a for a in parsed.actions if isinstance(a, Claim) and a.key == belief.key]
+            claims = [a for a in parsed.actions if isinstance(a, Claim) and a.key == key]
             if not parsed.actions:
                 return None
             if not claims:
-                feedback = [f'respond with one "claim" action for key `{belief.key}`']
+                feedback = [f'respond with one "claim" action for key `{key}`']
                 continue
             claim = claims[0]
             try:
-                return self._validate_rederived(claim, projection, belief, is_answer)
+                return self._validate_rederived(claim, projection, is_answer)
             except CorollaryError as exc:
                 feedback = [str(exc)]
         return None
 
-    def _validate_rederived(self, claim: Claim, projection: Projection, belief: Belief, is_answer: bool) -> Derived:
+    def _validate_rederived(self, claim: Claim, projection: Projection, is_answer: bool) -> Derived:
         allowed = set(projection.keys)
         deps = list(dict.fromkeys([*claim.follows_from, *(formula_keys(claim.formula) if claim.formula else [])]))
         outside = [d for d in deps if d not in allowed]
@@ -535,14 +594,17 @@ class Agent:
                 or isinstance(value, bool)
                 or not values_equal(computed, value, rel_tol=1e-6, abs_tol=1e-9)
             ):
+                self._learn(False, f"formula for {claim.key!r} did not reproduce the stated value")
                 raise ContractViolation(f"formula evaluates to {format_value(computed)}, not {format_value(value)}")
+            else:
+                self._learn(True, f"formula for {claim.key!r} verified")
         if value is None:
             raise ContractViolation("the claim has no value")
         return Derived(
             value=value,
             claim=str(value) if is_answer else claim.claim,
             formula=claim.formula,
-            confidence=self._step_confidence(claim.formula, claim.confidence),
+            confidence=self._certainty(claim.confidence),
             antecedents=tuple(deps) if self.dependencies is Dependencies.DECLARED and deps else None,
         )
 

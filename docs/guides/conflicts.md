@@ -55,6 +55,11 @@ kb.resolve(conflict, keep=belief, reason="SEC filing is authoritative")
 Resolution is a retraction with a reason. The losing revision stays in the base, `OUT`, and anything that
 depended on it cascades as usual.
 
+If a person checked the answer, pass `learn=True`: the losing sources are recorded as wrong and the
+winning ones as right in the trust ledger, so the next conflict between them is decided by their track
+records. `AskHuman` does this by default. Policy resolvers never do, so a policy can't reinforce itself.
+See [Confidence](confidence.md#what-counts-as-an-outcome).
+
 ## Resolving by policy
 
 A resolver is any callable `(conflict, kb) -> Resolution | None`. Returning `None` leaves the conflict

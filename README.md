@@ -76,6 +76,8 @@ Truth maintenance never took off for general reasoning because humans had to wri
 
 **Beliefs that expire.** A stock price is valid for a minute; a company's headquarters for a year. Stale beliefs trigger re-verification instead of silent reuse.
 
+**Trust that is earned.** Every source, the model included, is trusted as much as its track record justifies. When a source is shown to be wrong, everything it reported counts for less. Independent sources that agree reinforce each other. See [Confidence](docs/guides/confidence.md).
+
 **Auditable memory.** New sessions inherit verified beliefs with their proofs attached, not raw transcripts.
 
 **Multi-agent by argument** *(planned)*. Agents exchange beliefs with their support. The receiver can accept, reject, or demand proof.
@@ -196,6 +198,7 @@ What code can't catch is listed too: see [limits, stated honestly](docs/architec
 | `Proof` | The justification subgraph behind an answer. Exportable, verifiable, diffable. |
 | `Projector` | Builds every model context from `IN` beliefs. |
 | `TrustPolicy` | How much each source type is believed, and what is hidden from the model. |
+| `TrustLedger` | Learns how reliable each source really is from its track record. |
 
 Read more in [Core concepts](docs/concepts.md).
 

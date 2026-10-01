@@ -39,6 +39,7 @@ print(report.answer)  # the repaired answer
 | Build an agent on top of a model | [Agents](guides/agents.md) |
 | See exactly what a model is allowed to say | [The claim contract](guides/contract.md) |
 | Check answers without trusting the model | [Verification](guides/verification.md) |
+| Understand and tune how much each belief is trusted | [Confidence](guides/confidence.md) |
 | Handle sources that disagree | [Conflicts and resolution](guides/conflicts.md) |
 | Ground beliefs in documents | [Documents and citations](guides/documents.md) |
 | Make facts expire and refresh them | [Time and validity](guides/time.md) |
