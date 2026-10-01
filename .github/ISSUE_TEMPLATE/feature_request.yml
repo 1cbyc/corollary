@@ -1,0 +1,28 @@
+name: Feature request
+description: Propose a capability, a verifier, a model adapter or an API change.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that Corollary makes hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like to see? Sketch the API if you have one in mind.
+      render: python
+  - type: textarea
+    id: guarantees
+    attributes:
+      label: Effect on guarantees
+      description: |
+        Corollary's guarantees are enforced by code outside the model. Does this proposal keep, weaken or
+        strengthen them (e.g. "a retracted fact can never survive in a conclusion")?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

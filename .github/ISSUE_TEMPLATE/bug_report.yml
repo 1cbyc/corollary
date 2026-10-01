@@ -1,0 +1,43 @@
+name: Bug report
+description: Something behaves differently from the documentation.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. A minimal reproduction makes it far easier to fix.
+        Most kernel bugs can be reproduced with a `BeliefBase` and a few `assert_` / `derive` calls, without a model.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: A short script that shows the problem. Use `ScriptedModel` instead of a real model if an agent is involved.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output or traceback
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Corollary version
+      placeholder: python -c "import corollary; print(corollary.__version__)"
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version and OS
+      placeholder: Python 3.12 on Ubuntu 24.04
+    validations:
+      required: true

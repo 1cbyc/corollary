@@ -1,0 +1,69 @@
+site_name: Corollary
+site_description: An agent runtime where the unit of state is a belief, not a message.
+site_url: https://gabe-santana.github.io/corollary/
+repo_url: https://github.com/gabe-santana/corollary
+repo_name: gabe-santana/corollary
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; 2026 Gabriel Santana and the Corollary contributors. MIT License.
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Core concepts: concepts.md
+  - Guides:
+      - The belief base: guides/belief-base.md
+      - Agents: guides/agents.md
+      - The claim contract: guides/contract.md
+      - Verification: guides/verification.md
+      - Conflicts and resolution: guides/conflicts.md
+      - Documents and citations: guides/documents.md
+      - Time and validity: guides/time.md
+      - Models: guides/models.md
+      - Persistence: guides/persistence.md
+  - Architecture and guarantees: architecture.md
+  - API reference: api.md
+  - Related work: related-work.md
+  - FAQ: faq.md

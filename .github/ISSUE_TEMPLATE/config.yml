@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and design discussion
+    url: https://github.com/gabe-santana/corollary/discussions
+    about: Ask questions, discuss the belief schema, or propose a demo scenario from your domain.
+  - name: Report a security vulnerability
+    url: https://github.com/gabe-santana/corollary/security/advisories/new
+    about: Please report vulnerabilities privately, not as public issues.
