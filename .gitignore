@@ -35,3 +35,6 @@ Thumbs.db
 # Local belief base snapshots and secrets
 *.beliefs.json
 .env
+
+# Local folders
+local/
