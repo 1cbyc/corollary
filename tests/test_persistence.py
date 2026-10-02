@@ -98,3 +98,26 @@ def test_save_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
         kb.save(path)
     assert path.read_text(encoding="utf-8") == before
     assert [p.name for p in tmp_path.iterdir()] == ["beliefs.json"]  # no temporary file left behind
+
+
+def test_save_works_while_another_handle_reads_the_file(tmp_path: Path) -> None:
+    path = tmp_path / "beliefs.json"
+    build().save(path)
+    with path.open(encoding="utf-8"):  # on Windows, this blocks os.replace
+        build().save(path)
+    assert BeliefBase.load(path, rules=[growth]).value("growth") is not None
+
+
+def test_load_reports_the_callers_mistakes_as_such(tmp_path: Path) -> None:
+    path = tmp_path / "beliefs.json"
+    build().save(path)
+    with pytest.raises(AttributeError):
+        BeliefBase.load(path, rules=[lambda x: x])  # not a Rule: the caller's mistake, not corruption
+
+
+def test_missing_rule_warning_points_at_the_caller(tmp_path: Path) -> None:
+    path = tmp_path / "beliefs.json"
+    build().save(path)
+    with pytest.warns(UserWarning) as caught:
+        BeliefBase.load(path)
+    assert caught[0].filename == __file__

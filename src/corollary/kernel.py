@@ -17,6 +17,7 @@ retraction scales with what depends on it, not with the size of the belief base.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import heapq
 import itertools
@@ -1161,69 +1162,67 @@ class BeliefBase:
     ) -> BeliefBase:
         """Rebuild a base from :meth:`to_dict`. Pass ``ledger=`` to attach a shared trust ledger;
         otherwise the snapshot's own ledger is restored, if it has one."""
+        return cls._load_data(
+            data, rules=rules, constraints=constraints, trust=trust, clock=clock, ledger=ledger, stacklevel=3
+        )
+
+    @classmethod
+    def _load_data(
+        cls,
+        data: Mapping[str, Any],
+        *,
+        rules: Iterable[Rule] = (),
+        constraints: Iterable[Constraint] = (),
+        trust: TrustPolicy | None = None,
+        clock: Callable[[], datetime] | None = None,
+        ledger: TrustLedger | None = None,
+        stacklevel: int,
+    ) -> BeliefBase:
         if data.get("format") != _FORMAT:
             raise ValueError("not a Corollary belief base snapshot")
         version = int(data.get("version", 0))
         if version > _FORMAT_VERSION:
             raise ValueError(f"snapshot version {data['version']} is newer than this library supports")
-        try:
-            return cls._from_snapshot(data, version, rules, constraints, trust, clock, ledger)
-        except (KeyError, TypeError, IndexError, AttributeError) as exc:
-            raise ValueError(f"corrupt Corollary snapshot: missing or malformed {exc}") from exc
-
-    @classmethod
-    def _from_snapshot(
-        cls,
-        data: Mapping[str, Any],
-        version: int,
-        rules: Iterable[Rule],
-        constraints: Iterable[Constraint],
-        trust: TrustPolicy | None,
-        clock: Callable[[], datetime] | None,
-        ledger: TrustLedger | None,
-    ) -> BeliefBase:
-        if ledger is None and data.get("ledger"):
-            kb = cls(
-                trust=trust,
-                clock=clock,
-                rules=rules,
-                constraints=constraints,
-                ledger=TrustLedger.from_dict(data["ledger"]),
-            )
-            kb._owns_ledger = True
-        else:
-            kb = cls(trust=trust, clock=clock, rules=rules, constraints=constraints, ledger=ledger)
-        for item in data["beliefs"]:
-            belief = Belief.from_dict(item["belief"])
-            node = _Node(belief, retracted=bool(item.get("retracted")), retract_reason=item.get("retract_reason", ""))
-            kb._nodes[belief.ref] = node
-            kb._revisions.setdefault(belief.key, []).append(belief.ref)
-        max_id = 0
-        for raw in data["justifications"]:
-            j = Justification.from_dict(raw)
-            if version < 2:
-                j = kb._migrate_v1_justification(j)
-            kb._link(kb._nodes[j.conclusion], j)
-            if j.id[1:].isdigit():
-                max_id = max(max_id, int(j.id[1:]))
-        kb._ids = itertools.count(max_id + 1)
-        kb._documents = dict(data.get("documents", {}))
-        kb._history = [
-            Event(datetime.fromisoformat(e["at"]), e["action"], e["ref"], e.get("detail", ""))
-            for e in data.get("history", [])
-        ]
-        kb._relabel(list(kb._nodes))
-        kb._baseline.clear()
-        kb._hints.clear()
-        kb._reasons = dict(data.get("reasons", {}))  # relabeling on load is not a real change
+        with _corrupt_snapshot_errors():
+            saved_ledger = TrustLedger.from_dict(data["ledger"]) if ledger is None and data.get("ledger") else None
+        # Built outside the guard: a mistake in the caller's own arguments is not a corrupt snapshot.
+        kb = cls(trust=trust, clock=clock, rules=rules, constraints=constraints, ledger=saved_ledger or ledger)
+        kb._owns_ledger = saved_ledger is not None or kb._owns_ledger
+        with _corrupt_snapshot_errors():
+            kb._restore(data, version)
         missing = sorted({j.rule for j in kb._justifications.values() if j.rule and j.rule not in kb._rules})
         if missing:
             warnings.warn(
                 f"the snapshot uses rules that were not passed to load(): {', '.join(missing)}. Beliefs "
                 "derived by them can't be re-derived or replayed by the verifier until you register them.",
-                stacklevel=3,
+                stacklevel=stacklevel,
             )
         return kb
+
+    def _restore(self, data: Mapping[str, Any], version: int) -> None:
+        for item in data["beliefs"]:
+            belief = Belief.from_dict(item["belief"])
+            node = _Node(belief, retracted=bool(item.get("retracted")), retract_reason=item.get("retract_reason", ""))
+            self._nodes[belief.ref] = node
+            self._revisions.setdefault(belief.key, []).append(belief.ref)
+        max_id = 0
+        for raw in data["justifications"]:
+            j = Justification.from_dict(raw)
+            if version < 2:
+                j = self._migrate_v1_justification(j)
+            self._link(self._nodes[j.conclusion], j)
+            if j.id[1:].isdigit():
+                max_id = max(max_id, int(j.id[1:]))
+        self._ids = itertools.count(max_id + 1)
+        self._documents = dict(data.get("documents", {}))
+        self._history = [
+            Event(datetime.fromisoformat(e["at"]), e["action"], e["ref"], e.get("detail", ""))
+            for e in data.get("history", [])
+        ]
+        self._relabel(list(self._nodes))
+        self._baseline.clear()
+        self._hints.clear()
+        self._reasons = dict(data.get("reasons", {}))  # relabeling on load is not a real change
 
     def _migrate_v1_justification(self, j: Justification) -> Justification:
         """Version 1 stored model steps with the model's trust folded into ``confidence``; version 2
@@ -1241,7 +1240,7 @@ class BeliefBase:
     @classmethod
     def load(cls, path: str | os.PathLike[str], **kwargs: Any) -> BeliefBase:
         """Load a snapshot written by :meth:`save`. Pass ``rules=`` to re-link derivation rules."""
-        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")), **kwargs)
+        return cls._load_data(json.loads(Path(path).read_text(encoding="utf-8")), stacklevel=3, **kwargs)
 
     # ======================================================================================
     # Internals: graph construction
@@ -1810,6 +1809,15 @@ def _numeric_match(computed: float, stated: Any) -> bool:
     if isinstance(stated, bool) or not isinstance(stated, (int, float)):
         return False
     return values_equal(computed, stated, rel_tol=1e-6, abs_tol=1e-9)
+
+
+@contextlib.contextmanager
+def _corrupt_snapshot_errors() -> Iterator[None]:
+    """Report a snapshot whose data has the wrong shape as one clear error."""
+    try:
+        yield
+    except (KeyError, TypeError, IndexError, AttributeError) as exc:
+        raise ValueError(f"corrupt Corollary snapshot: missing or malformed {exc}") from exc
 
 
 def _keys(items: str | Iterable[str]) -> tuple[str, ...]:
