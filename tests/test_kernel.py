@@ -499,3 +499,15 @@ def test_a_resolver_naming_refs_outside_the_conflict_is_an_error(kb: BeliefBase)
     kb.assert_("k", 2, source="tool:b")
     with pytest.raises(ValueError, match="nope@1"):
         kb.resolve_conflicts(lambda c, _kb: Resolution(c.id, ("nope@1",), "bad"))
+
+
+def test_confidence_values_are_validated_everywhere() -> None:
+    from corollary import Rule
+    from corollary.kernel import Derived
+
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        Rule("r", lambda: 1, confidence=5.0)
+    with pytest.raises(ValueError, match="needs a name"):
+        Rule("", lambda: 1)
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        Derived(1, confidence=1.5)

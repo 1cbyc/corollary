@@ -138,3 +138,10 @@ def test_async_tools_run_inside_a_running_event_loop() -> None:
         return fetch.invoke({"n": 3})  # type: ignore[no-any-return]
 
     assert asyncio.run(main()) == 6
+
+
+def test_trust_policy_keeps_defaults_for_kinds_left_out() -> None:
+    policy = TrustPolicy(sources={"tool": 0.8}, tool_levels={"paranoid": 0.5})
+    assert policy.confidence_for("tool:x") == 0.8
+    assert policy.confidence_for("human:alice") == 0.99
+    assert policy.tool_confidence("high") == 0.99 and policy.tool_confidence("paranoid") == 0.5

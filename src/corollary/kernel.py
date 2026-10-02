@@ -94,6 +94,10 @@ class Derived:
     confidence: float | None = None
     antecedents: tuple[str, ...] | None = None
 
+    def __post_init__(self) -> None:
+        if self.confidence is not None:
+            _check_confidence(self.confidence)
+
 
 Rederiver = Callable[[Rederivation], "Derived | None"]
 
