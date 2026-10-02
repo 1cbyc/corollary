@@ -43,9 +43,10 @@ model = AnthropicModel(
   to. Lower it for cheaper, simpler tasks.
 - **Fallbacks.** With `fallbacks="default"`, the request uses the server-side refusal fallback (beta
   `server-side-fallback-2026-07-01`), so a declined request can be served by a fallback model in the same
-  call. This is available on the Claude API. Set `fallbacks=None` on platforms that don't support it, such
-  as Amazon Bedrock, Google Vertex AI and Microsoft Foundry.
+  call. This is available on the Claude API only, so it is left out automatically when `client` is an
+  Amazon Bedrock, Google Vertex AI or Microsoft Foundry client.
 - **Refusals** that still happen raise `ModelRefusalError`, and truncated responses raise `ModelError`.
+  `Agent.run()` catches both and returns its report with the error in `report.error`.
 - **Other platforms.** Pass a platform client, for example `anthropic.AnthropicBedrockMantle(...)`, as
   `client=`.
 - `model.request(system, prompt)` returns the exact keyword arguments that would be sent, which is useful
@@ -67,7 +68,8 @@ local = OpenAIModel("llama3", client=openai.OpenAI(base_url="http://localhost:11
 
 `OpenAIModel` uses the Chat Completions API, so it works with any compatible server (vLLM, Ollama,
 LM Studio, ...). It requests JSON mode by default. Pass `json_mode=False` for servers that don't support
-it. Extra keyword arguments (`temperature=0`, ...) are forwarded.
+it. Extra keyword arguments (`temperature=0`, ...) are forwarded; an explicit `response_format` replaces
+JSON mode. Refusals (`message.refusal`, or `finish_reason == "content_filter"`) raise `ModelRefusalError`.
 
 ## Any function
 

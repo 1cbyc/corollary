@@ -123,3 +123,35 @@ def test_openai_adapter() -> None:
 def test_openai_errors(content: str | None, finish: str) -> None:
     with pytest.raises(ModelError):
         OpenAIModel("m", client=openai_client(content, finish)).complete("s", "p")
+
+
+def test_anthropic_platform_clients_skip_server_side_fallbacks() -> None:
+    class AnthropicFoundry(SimpleNamespace):
+        pass
+
+    messages = FakeMessages(message())
+    model = AnthropicModel(client=AnthropicFoundry(messages=messages, beta=SimpleNamespace(messages=messages)))
+    assert "betas" not in model.request("s", "p") and "fallbacks" not in model.request("s", "p")
+    assert model.complete("s", "p") == '{"actions": []}'
+
+
+@pytest.mark.parametrize(
+    ("message_fields", "finish", "error", "match"),
+    [
+        ({"content": None, "refusal": "I can't help with that."}, "stop", ModelRefusalError, "can't help"),
+        ({"content": None}, "content_filter", ModelRefusalError, "declined"),
+    ],
+)
+def test_openai_refusals(message_fields: dict[str, Any], finish: str, error: type[Exception], match: str) -> None:
+    choice = SimpleNamespace(message=SimpleNamespace(**message_fields), finish_reason=finish)
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FakeMessages(SimpleNamespace(choices=[choice]))))
+    with pytest.raises(error, match=match):
+        OpenAIModel("m", client=client).complete("s", "p")
+
+
+def test_openai_empty_choices_and_explicit_response_format() -> None:
+    client = SimpleNamespace(chat=SimpleNamespace(completions=FakeMessages(SimpleNamespace(choices=[]))))
+    with pytest.raises(ModelError, match="no choices"):
+        OpenAIModel("m", client=client).complete("s", "p")
+    schema = {"type": "json_schema", "json_schema": {"name": "x", "schema": {}}}
+    assert OpenAIModel("m", response_format=schema).request("s", "p")["response_format"] == schema
