@@ -132,6 +132,8 @@ Models don't always produce clean JSON. The parser accepts:
 - a single action object (`{"type": "answer", ...}`) or a bare list of actions;
 - `args` as an object or as a JSON-encoded string;
 - `follows_from` as a list or a single string;
+- `confidence` as a numeric string (`"0.9"`) or a percentage (`"90%"`), and an answer `text` that is a
+  bare number;
 - Python-style literals (single quotes, `True`, `None`) when nothing else parses.
 
 Everything else is strict. When nothing parses, the feedback says where the JSON broke.

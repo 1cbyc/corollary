@@ -109,3 +109,16 @@ def test_schema_shape() -> None:
 def test_per_action_errors_say_which_action() -> None:
     parsed = parse_response('{"actions": [{"type": "claim", "key": "growth", "follows_from": [1]}]}')
     assert parsed.errors[0].startswith("action 1 (claim, key 'growth'): ")
+
+
+def test_unambiguous_slips_are_accepted() -> None:
+    parsed = parse_response(
+        '{"actions": [{"type": "claim", "key": "k", "value": 1, "confidence": "0.9"},'
+        ' {"type": "claim", "key": "j", "value": 1, "confidence": "80%"},'
+        ' {"type": "answer", "text": 42}]}'
+    )
+    assert parsed.errors == ()
+    first, second, answer = parsed.actions
+    assert isinstance(first, Claim) and first.confidence == 0.9
+    assert isinstance(second, Claim) and second.confidence == pytest.approx(0.8)
+    assert answer == Answer("42")

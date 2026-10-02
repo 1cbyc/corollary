@@ -241,6 +241,17 @@ def parse_response(text: str) -> ParsedResponse:
     return ParsedResponse(tuple(actions), tuple(errors))
 
 
+def _fraction(text: str) -> float | None:
+    """``"0.9"`` -> 0.9 and ``"90%"`` -> 0.9; ``None`` when ``text`` isn't a number."""
+    text = text.strip()
+    percent = text.endswith("%")
+    try:
+        number = float(text.rstrip("%").strip())
+    except ValueError:
+        return None
+    return number / 100 if percent else number
+
+
 def _label(item: Any) -> str:
     """A short reminder of what an action was, e.g. ``(claim, key 'growth')``."""
     if not isinstance(item, dict):
@@ -285,6 +296,8 @@ def parse_action(item: Any) -> Action:
         value = item.get("confidence")
         if value is None:
             return None
+        if isinstance(value, str) and (number := _fraction(value)) is not None:
+            value = number  # "0.9" and "90%" are common slips; accept what is unambiguous
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
             errors.append("'confidence' must be a number between 0 and 1")
             return None
@@ -333,6 +346,9 @@ def parse_action(item: Any) -> Action:
             confidence=confidence_field(),
         )
     else:
+        text = item.get("text")
+        if isinstance(text, (int, float)) and not isinstance(text, bool):
+            item = {**item, "text": str(text)}  # a bare number is a fine answer text
         action = Answer(text=text_field("text"), follows_from=keys_field("follows_from"), confidence=confidence_field())
     if errors:
         raise ContractViolation(errors)
