@@ -100,6 +100,7 @@ class Projector:
         instructions: str = "",
         include_documents: bool = True,
     ) -> Projection:
+        scope = set(scope) if scope is not None else None  # it is read twice; a generator would run dry
         visible = self.select(kb, scope)
         sections = [f"# Task\n{task.strip()}"]
         if instructions:
@@ -122,7 +123,7 @@ class Projector:
         else:
             sections.append("# Beliefs\n(none yet)")
 
-        conflicts = [c for c in kb.conflicts() if scope is None or set(c.keys) & set(scope)]
+        conflicts = [c for c in kb.conflicts() if scope is None or set(c.keys) & scope]
         if conflicts:
             lines = ["These keys are disputed and unusable until resolved:"]
             lines += [f"- {c.subject}: {c.description.split(' (')[0]}" for c in conflicts]

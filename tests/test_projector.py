@@ -63,3 +63,14 @@ def test_sections(kb: BeliefBase) -> None:
     assert "## memo\nxxxxxxxxxx\n[... truncated at 10 characters]" in text
     assert "# Runtime feedback" in text and "claim 'z' rejected" in text
     assert "# Documents" not in Projector().project(kb, task="t", include_documents=False).text
+
+
+def test_scope_may_be_a_generator() -> None:
+    from corollary import BeliefBase, Projector
+
+    kb = BeliefBase()
+    kb.assert_("k", 1, source="tool:a")
+    kb.assert_("k", 2, source="tool:b")
+    kb.assert_("other", 3, source="tool:a")
+    projection = Projector().project(kb, task="t", scope=(key for key in ["k", "other"]))
+    assert "Conflicts" in projection.text and [b.key for b in projection.visible] == ["other"]

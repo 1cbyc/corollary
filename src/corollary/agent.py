@@ -176,6 +176,8 @@ class Agent:
     ) -> None:
         if self_consistency < 1:
             raise ValueError("self_consistency must be at least 1")
+        if max_steps < 1:
+            raise ValueError("max_steps must be at least 1")
         self.model = resolve_model(model)
         self.kb = beliefs if beliefs is not None else BeliefBase(trust=trust)
         if trust is not None:
@@ -210,7 +212,10 @@ class Agent:
         key = self._answer_key()
         steps: list[StepRecord] = []
         feedback: list[str] = []
-        for index in range(1, (max_steps or self.max_steps) + 1):
+        budget = self.max_steps if max_steps is None else max_steps
+        if budget < 1:
+            raise ValueError("max_steps must be at least 1")
+        for index in range(1, budget + 1):
             self.kb.refresh()
             if self.resolver is not None:
                 self.kb.resolve_conflicts(self.resolver)

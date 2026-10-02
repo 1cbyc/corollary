@@ -561,3 +561,11 @@ def test_reverify_refreshes_faded_tool_results(clock: Clock) -> None:
     assert calls == ["ACME", "ACME"]
     assert agent.kb.confidence("price:ACME") == pytest.approx(0.99)
     assert model.remaining == 0
+
+
+def test_step_budget_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="max_steps"):
+        Agent(ScriptedModel(), max_steps=0)
+    agent, _ = make_agent(FETCH)
+    with pytest.raises(ValueError, match="max_steps"):
+        agent.run("t", max_steps=0)
