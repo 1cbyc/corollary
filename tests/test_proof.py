@@ -83,3 +83,36 @@ def test_diff(revenue_kb: BeliefBase) -> None:
 def test_proof_requires_a_target(kb: BeliefBase) -> None:
     with pytest.raises(ValueError):
         kb.proof()
+
+
+def test_diff_reports_status_changes(revenue_kb: BeliefBase) -> None:
+    before = revenue_kb.proof("trend:Q3")
+    revenue_kb.retract("revenue:Q2")
+    after = revenue_kb.proof("trend:Q3@1")
+    diff = before.diff(after)
+    assert ("trend:Q3", Status.IN, Status.OUT) in diff.status_changed
+    assert not diff.empty and "! trend:Q3: IN -> OUT" in str(diff)
+
+
+def test_deep_proofs_render(kb: BeliefBase) -> None:
+    kb.assert_("n0", 0, source="tool:x")
+    for i in range(1, 1500):
+        kb.derive(f"n{i}", lambda v: v + 1, f"n{i - 1}")
+    lines = kb.proof("n1499").render().splitlines()
+    assert len(lines) == 1500 and lines[-1].strip().endswith("tool:x")
+
+
+def test_exports_escape_quotes_and_backslashes(kb: BeliefBase) -> None:
+    key = r'dir:C:\data\"x"'
+    kb.assert_(key, 'say "hi" #1', source="tool:x")
+    proof = kb.proof(key)
+    assert "#quot;hi#quot; #35;1" in proof.to_mermaid()
+    assert r'label="dir:C:\\data\\\"x\" = ' in proof.to_dot()
+
+
+def test_from_dict_rejects_other_formats(revenue_kb: BeliefBase) -> None:
+    data = revenue_kb.proof("trend:Q3").to_dict()
+    with pytest.raises(ValueError, match="not a Corollary proof"):
+        Proof.from_dict({**data, "format": "something-else"})
+    with pytest.raises(ValueError, match="unsupported proof version 99"):
+        Proof.from_dict({**data, "version": 99})

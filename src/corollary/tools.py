@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import inspect
 import re
 import types
@@ -58,13 +60,39 @@ class Tool:
         return self.fn(*args, **kwargs)
 
     def bind(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        """Validate ``args`` against the signature and return them with defaults applied."""
+        """Validate ``args`` against the signature and return them with defaults applied.
+
+        Arguments annotated ``str``, ``int``, ``float`` or ``bool`` (or optional versions of them)
+        are checked, and coerced when the intent is unambiguous: ``"3"`` for an ``int`` becomes
+        ``3``, ``"true"`` for a ``bool`` becomes ``True``. Anything else is a contract violation the
+        model sees, instead of an exception from inside the tool.
+        """
         try:
             bound = self.signature.bind(**dict(args))
         except TypeError as exc:
             raise ContractViolation(f"invalid arguments for tool {self.name!r}: {exc}") from None
+        hints = _type_hints(self.fn)
+        # Only what the model supplied is checked: defaults come from the tool itself.
+        for name, value in list(bound.arguments.items()):
+            if name in hints and self.signature.parameters[name].kind not in (
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            ):
+                try:
+                    bound.arguments[name] = _coerce(value, hints[name])
+                except (TypeError, ValueError, ArithmeticError):
+                    expected = _type_name(hints[name])
+                    raise ContractViolation(
+                        f"invalid arguments for tool {self.name!r}: {name!r} must be {expected}, got {value!r}"
+                    ) from None
         bound.apply_defaults()
         return dict(bound.arguments)
+
+    def invoke(self, args: Mapping[str, Any]) -> Any:
+        """Call the function with arguments from :meth:`bind`. An ``async`` tool is run to completion
+        (on a worker thread with its own event loop when the caller is already inside one)."""
+        result = self.fn(**args)
+        return _resolve(result) if inspect.isawaitable(result) else result
 
     def default_key(self, args: Mapping[str, Any]) -> str:
         """Belief key used when the model doesn't name one, e.g. ``get_revenue:Q2``."""
@@ -146,6 +174,66 @@ def tool(
         )
 
     return wrap(fn) if fn is not None else wrap
+
+
+_TRUE = {"true", "yes", "1"}
+_FALSE = {"false", "no", "0"}
+
+
+def _coerce(value: Any, annotation: Any) -> Any:
+    """Check ``value`` against a simple annotation, converting unambiguous strings and numbers.
+    Raises ``TypeError`` or ``ValueError`` when it doesn't fit; annotations it doesn't know pass."""
+    if typing.get_origin(annotation) in (typing.Union, types.UnionType):
+        options = typing.get_args(annotation)
+        if value is None and type(None) in options:
+            return None
+        simple = [a for a in options if a is not type(None)]
+        return _coerce(value, simple[0]) if len(simple) == 1 else value
+    if annotation is bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int) and value in (0, 1):  # models often send flags as 0 and 1
+            return bool(value)
+        if isinstance(value, str) and value.strip().lower() in _TRUE | _FALSE:
+            return value.strip().lower() in _TRUE
+        raise TypeError
+    if annotation is int:
+        if isinstance(value, bool):
+            raise TypeError
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        if isinstance(value, str):
+            return int(value.strip())
+        raise TypeError
+    if annotation is float:
+        if isinstance(value, bool):
+            raise TypeError
+        if isinstance(value, (int, float)):
+            return value  # an int is a fine float, and keeps result keys like "scale:2" stable
+        if isinstance(value, str):
+            return float(value.strip())
+        raise TypeError
+    if annotation is str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return str(value)
+        raise TypeError
+    return value
+
+
+def _resolve(awaitable: Any) -> Any:
+    async def wait() -> Any:
+        return await awaitable
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(wait())
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, wait()).result()
 
 
 def _type_hints(fn: Callable[..., Any]) -> dict[str, Any]:

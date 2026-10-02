@@ -54,7 +54,8 @@ def test_loaded_base_keeps_working(tmp_path: Path) -> None:
 def test_missing_rules_leave_beliefs_pending(tmp_path: Path) -> None:
     path = tmp_path / "beliefs.json"
     build().save(path)
-    kb = BeliefBase.load(path)
+    with pytest.warns(UserWarning, match="rules that were not passed to load"):
+        kb = BeliefBase.load(path)
     kb.retract("revenue:Q3")
     kb.assert_("revenue:Q3", 5e9, source="tool:get_revenue")
     (pending,) = kb.propagate().pending
@@ -73,3 +74,50 @@ def test_rejects_foreign_or_future_snapshots() -> None:
 def test_snapshot_is_plain_json() -> None:
     text = json.dumps(build().to_dict())
     assert '"format": "corollary.beliefbase"' in text
+
+
+def test_corrupt_snapshots_raise_value_error() -> None:
+    data = build().to_dict()
+    del data["beliefs"][0]["belief"]
+    with pytest.raises(ValueError, match="corrupt Corollary snapshot"):
+        BeliefBase.from_dict(data)
+
+
+def test_save_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "beliefs.json"
+    build().save(path)
+    before = path.read_text(encoding="utf-8")
+    kb = build()
+    kb.assert_("more", 1, source="tool:x")
+
+    def crash(fd: int) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("corollary._io.os.fsync", crash)  # fail mid-write
+    with pytest.raises(OSError, match="disk full"):
+        kb.save(path)
+    assert path.read_text(encoding="utf-8") == before
+    assert [p.name for p in tmp_path.iterdir()] == ["beliefs.json"]  # no temporary file left behind
+
+
+def test_save_works_while_another_handle_reads_the_file(tmp_path: Path) -> None:
+    path = tmp_path / "beliefs.json"
+    build().save(path)
+    with path.open(encoding="utf-8"):  # on Windows, this blocks os.replace
+        build().save(path)
+    assert BeliefBase.load(path, rules=[growth]).value("growth") is not None
+
+
+def test_load_reports_the_callers_mistakes_as_such(tmp_path: Path) -> None:
+    path = tmp_path / "beliefs.json"
+    build().save(path)
+    with pytest.raises(AttributeError):
+        BeliefBase.load(path, rules=[lambda x: x])  # not a Rule: the caller's mistake, not corruption
+
+
+def test_missing_rule_warning_points_at_the_caller(tmp_path: Path) -> None:
+    path = tmp_path / "beliefs.json"
+    build().save(path)
+    with pytest.warns(UserWarning) as caught:
+        BeliefBase.load(path)
+    assert caught[0].filename == __file__

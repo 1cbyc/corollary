@@ -11,6 +11,7 @@ from corollary import (
     CorollaryError,
     Dependencies,
     JustificationKind,
+    ModelError,
     PreferSource,
     ScriptedModel,
     Status,
@@ -124,6 +125,8 @@ def test_declared_dependencies_follow_follows_from() -> None:
         (claim("revenue:Q2", 1.0, []), "already holds 4,300,000,000"),
         (claim("bad key", 1, []), "invalid belief key"),
         (claim("answer", 1, []), "reserved for the answer"),
+        ({**call("Q2"), "key": "answer"}, "reserved for the answer"),
+        ({"type": "cite", "document": "none", "quote": "q", "key": "answer", "value": 1}, "reserved for the answer"),
         ({"type": "call_tool", "tool": "launch_missiles", "args": {}}, "unknown tool 'launch_missiles'"),
         ({"type": "call_tool", "tool": "get_revenue", "args": {"q": "Q2"}}, "invalid arguments"),
         ({"type": "call_tool", "tool": "get_revenue", "args": {"quarter": "Q7"}}, "raised KeyError"),
@@ -138,6 +141,34 @@ def test_invalid_actions_are_rejected_and_fed_back(bad: dict[str, Any], message:
     assert any(message in r for r in report.rejections), report.rejections
     assert "# Runtime feedback" in model.calls[2].prompt
     assert message in model.calls[2].prompt
+
+
+def test_model_error_ends_the_run_but_keeps_the_report() -> None:
+    agent, _ = make_agent(FETCH)  # the scripted model has nothing to say on step 2
+    report = agent.run("t")
+    assert not report.completed and report.answer is None
+    assert isinstance(report.error, ModelError) and "no responses left" in str(report.error)
+    assert len(report.steps) == 2 and report.steps[0].accepted
+    assert report.rejections == ["model error: ScriptedModel has no responses left"]
+    assert agent.kb.value("revenue:Q2") == 4.3e9
+
+
+def test_async_tools_and_string_arguments() -> None:
+    @tool
+    async def revenue_in_billions(quarter: str, scale: float) -> float:
+        return REVENUE[quarter] / scale
+
+    call_it = {
+        "type": "call_tool",
+        "tool": "revenue_in_billions",
+        "args": {"quarter": "Q2", "scale": "1e9"},
+        "key": "rev:Q2",
+    }
+    agent = Agent(ScriptedModel([actions(call_it), actions(answer("4.3B", ["rev:Q2"]))]))
+    agent.tools["revenue_in_billions"] = revenue_in_billions
+    report = agent.run("t")
+    assert report.completed, report.rejections
+    assert agent.kb.value("rev:Q2") == pytest.approx(4.3)
 
 
 def test_claim_cannot_use_a_tool_result_from_the_same_turn() -> None:
@@ -308,6 +339,19 @@ def test_repair_rejects_invalid_rederivations_and_retries() -> None:
     assert "evaluates to" in model.calls[3].prompt
     pending = {p.belief.key for p in result.pending}
     assert pending == {"trend", "answer"}
+
+
+def test_repair_retries_after_a_malformed_rederivation() -> None:
+    agent, model = make_agent(FETCH, ANALYZE, repair_attempts=2)
+    agent.run("t")
+    correct_q2(agent)
+    model.add(
+        actions({"type": "claim", "formula": GROWTH}),  # no key: fails to parse
+        actions(claim("growth:Q3_vs_Q2", None, ["revenue:Q2", "revenue:Q3"], formula=GROWTH)),
+    )
+    agent.repair()
+    assert agent.kb.value("growth:Q3_vs_Q2") == pytest.approx(9.75609756)
+    assert "claim requires 'key'" in model.calls[3].prompt
 
 
 def test_repair_with_rules_needs_no_model() -> None:
@@ -517,3 +561,30 @@ def test_reverify_refreshes_faded_tool_results(clock: Clock) -> None:
     assert calls == ["ACME", "ACME"]
     assert agent.kb.confidence("price:ACME") == pytest.approx(0.99)
     assert model.remaining == 0
+
+
+def test_step_budget_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="max_steps"):
+        Agent(ScriptedModel(), max_steps=0)
+    agent, _ = make_agent(FETCH)
+    with pytest.raises(ValueError, match="max_steps"):
+        agent.run("t", max_steps=0)
+
+
+def test_instructions_reach_every_prompt() -> None:
+    agent, model = make_agent(FETCH, ANALYZE, instructions="Answer in Portuguese.")
+    agent.run("t", instructions="Be brief.")
+    assert "# Instructions\nAnswer in Portuguese.\n\nBe brief." in model.calls[0].prompt
+    correct_q2(agent)
+    model.add(actions(claim("growth:Q3_vs_Q2", None, ["revenue:Q2", "revenue:Q3"], formula=GROWTH)), actions())
+    agent.repair()
+    assert "Answer in Portuguese." in model.calls[2].prompt  # re-derivations follow them too
+    assert "Be brief." not in model.calls[2].prompt  # run instructions were for that run only
+
+
+def test_tool_failures_are_logged_with_their_traceback(caplog: pytest.LogCaptureFixture) -> None:
+    agent, _ = make_agent(actions({"type": "call_tool", "tool": "get_revenue", "args": {"quarter": "Q7"}}), ANALYZE)
+    with caplog.at_level("WARNING", logger="corollary"):
+        agent.run("t")
+    (record,) = [r for r in caplog.records if "get_revenue" in r.getMessage()]
+    assert record.name == "corollary.agent" and record.exc_info is not None

@@ -50,3 +50,24 @@ def test_propagate_refreshes_expiry(kb: BeliefBase, clock: Clock) -> None:
     clock.advance(seconds=10)
     result = kb.propagate()
     assert [(c.kind.value, c.key, c.reason) for c in result] == [("OUT", "x", "expired")]
+
+
+def test_new_conclusions_never_rest_on_expired_evidence(kb: BeliefBase, clock: Clock) -> None:
+    import pytest
+
+    from corollary import NotBelievedError
+
+    kb.assert_("price", 101.5, source="tool:quote", ttl=timedelta(minutes=1))
+    clock.advance(minutes=2)  # nobody called refresh()
+    with pytest.raises(NotBelievedError):
+        kb.derive("expensive", rule(lambda p: p > 100, name="gt100b"), "price")
+    with pytest.raises(NotBelievedError):
+        kb.justify("cheap", False, antecedents=["price"], source="model:m")
+    assert kb.status("price") is Status.OUT
+
+
+def test_forgotten_validity_windows_are_dropped(kb: BeliefBase) -> None:
+    kb.assert_("price", 1, source="tool:quote", ttl=timedelta(minutes=1))
+    kb.assert_("price", 1, source="tool:quote")  # the same source again, now without a window
+    kb.refresh()
+    assert kb._expiring == set()

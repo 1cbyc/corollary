@@ -23,6 +23,12 @@ class Rule:
     confidence: float = 1.0
     description: str = ""
 
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("a rule needs a name")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError(f"rule confidence must be between 0 and 1, got {self.confidence}")
+
     def __call__(self, *args: Any) -> Any:
         return self.fn(*args)
 
@@ -58,8 +64,6 @@ def rule(
     """
 
     def wrap(func: Callable[..., Any]) -> Rule:
-        if not 0.0 <= confidence <= 1.0:
-            raise ValueError("rule confidence must be between 0 and 1")
         doc = description if description is not None else (func.__doc__ or "").strip().split("\n")[0]
         return Rule(name=name or func.__name__, fn=func, confidence=confidence, description=doc)
 

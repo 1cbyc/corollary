@@ -154,3 +154,49 @@ def test_numeric_provenance_accepts_identifiers_and_names(kb: BeliefBase) -> Non
     )
     report = kb.proof("answer").verify(kb, checks=[NumericProvenanceCheck()])
     assert [w.message for w in report.warnings] == ["states 2500, which does not follow from its antecedents"]
+
+
+def test_numeric_provenance_does_not_let_a_claim_vouch_for_itself(kb: BeliefBase) -> None:
+    kb.assert_("revenue", 4.3e9, source="tool:oms")
+    kb.justify("growth", 17.4, antecedents=["revenue"], source="model:m", claim="Growth was 17.4%.")
+    report = kb.proof("growth").verify(kb, checks=[NumericProvenanceCheck()])
+    assert [w.message for w in report.warnings] == ["states 17.4, which does not follow from its antecedents"]
+
+
+def test_numeric_provenance_ignores_dates_and_times(kb: BeliefBase) -> None:
+    kb.assert_("revenue", 4.3e9, source="tool:oms")
+    kb.justify(
+        "summary",
+        "ok",
+        antecedents=["revenue"],
+        source="model:m",
+        claim="As of 2026-03-25 at 10:45, revenue was $4.3 billion.",
+    )
+    report = kb.proof("summary").verify(kb, checks=[NumericProvenanceCheck()])
+    assert report.warnings == []
+
+
+def test_a_naive_check_time_is_taken_as_utc(kb: BeliefBase) -> None:
+    from datetime import datetime, timedelta
+
+    kb.assert_("price", 10, source="tool:x", ttl=timedelta(days=1))
+    report = kb.proof("price").verify(kb, at=datetime(2030, 1, 1))
+    assert not report.ok and any("expired" in r.message for r in report.errors)
+
+
+def test_a_blank_quote_is_a_missing_quote(kb: BeliefBase) -> None:
+    from corollary import Source
+
+    kb.add_document("doc", "Revenue was $4.3 billion.")
+    kb.assert_("rev", 4.3e9, source=Source.document("doc", quote="   "))
+    report = kb.proof("rev").verify(kb, checks=[CitationCheck()])
+    assert [w.message for w in report.warnings] == ["cites 'doc' without a quote"]
+
+
+def test_a_naive_check_time_works_with_a_naive_clock() -> None:
+    from datetime import datetime
+
+    kb = BeliefBase(clock=lambda: datetime(2026, 1, 1))
+    kb.assert_("a", 1, source="tool:x", valid_until=datetime(2026, 6, 1))
+    report = kb.proof("a").verify(at=datetime(2027, 1, 1))  # no kb: the proof alone decides
+    assert any("expired" in r.message for r in report.errors)

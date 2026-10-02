@@ -22,7 +22,7 @@ is given. Signatures show keyword-only arguments after `*`. Every class and func
 
 | Method | Description |
 |---|---|
-| `register_rule(rule) -> Rule` | Register a rule for derivation, re-derivation and replay. |
+| `register_rule(rule, *, replace=False) -> Rule` | Register a rule for derivation, re-derivation and replay; `replace=True` swaps a same-named rule. |
 | `rules -> Mapping[str, Rule]` | Registered rules. |
 | `derive(key, rule, *inputs, unless=(), claim="", metadata=None) -> Belief` | Derive with a rule (a `Rule`, callable, or rule name). |
 | `justify(key, value, *, antecedents, source, claim="", formula=None, confidence=None, unless=(), inputs=None, note="", metadata=None) -> Belief` | Record a conclusion with explicit antecedents; formulas must reproduce `value`. |
@@ -146,7 +146,8 @@ Fields: `id`, `conclusion`, `kind` (`JustificationKind.PREMISE | RULE | MODEL`),
 ### `Propagation`
 
 A sequence of `Change`s with extra fields: `pending`, `conflicts`, `rederived`. Properties: `retracted`,
-`added`, `kept`. Method: `of_kind(kind)`.
+`added`, `kept`, and `settled` (nothing pending, no open conflict). Method: `of_kind(kind)`. Like any
+sequence it is falsy when there are no changes, even with pending beliefs or open conflicts.
 
 ## Rules and tools
 
@@ -186,7 +187,7 @@ callable `(conflict, kb) -> Resolution | None` is a resolver.
 Build with `kb.proof(...)` or `Proof.build(kb, *keys)`. Access: iteration, `len`, `in`, `step(key_or_ref)`,
 `by_ref`, `premises`, `derived`, `valid`. Output: `render(*, show_sources=True, ascii=False)`, `str()`,
 `to_mermaid()`, `to_dot()`, `to_dict()`, `to_json()`, `from_dict()`, `from_json()`. Comparison:
-`diff(other) -> ProofDiff(added, removed, changed)`. Verification: `verify(kb=None, *, checks=None, at=None)`.
+`diff(other) -> ProofDiff(added, removed, changed, status_changed)`. Verification: `verify(kb=None, *, checks=None, at=None)`.
 
 ### `ProofStep(belief, status, confidence, justification)`
 
@@ -210,11 +211,11 @@ Properties: `ref`, `antecedents`, `is_premise`.
 
 ## Agents
 
-### `Agent(model, beliefs=None, tools=(), *, documents=None, rules=(), trust=None, projector=None, dependencies="conservative", resolver=None, max_steps=12, repair_attempts=2, self_consistency=1, learn_from_checks=True, system_prompt=SYSTEM_PROMPT)`
+### `Agent(model, beliefs=None, tools=(), *, documents=None, rules=(), trust=None, projector=None, dependencies="conservative", resolver=None, max_steps=12, repair_attempts=2, self_consistency=1, learn_from_checks=True, instructions="", system_prompt=SYSTEM_PROMPT)`
 
 | Method / attribute | Description |
 |---|---|
-| `run(task, *, max_steps=None) -> Report` | Work on a task until answered or out of steps. |
+| `run(task, *, max_steps=None, instructions="") -> Report` | Work on a task until answered or out of steps; `report.error` holds a model failure. |
 | `repair(*, include_kept=False) -> Propagation` | Re-derive everything that lost support. |
 | `reverify(*, include_kept=False) -> Propagation` | Re-run expired or faded tool calls, then repair. |
 | `narrow(key) -> NarrowResult` | Prune unnecessary dependencies by ablation. |

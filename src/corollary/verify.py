@@ -14,7 +14,7 @@ from __future__ import annotations
 import enum
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from .belief import SourceKind, Status, format_value, utcnow, values_equal
@@ -23,7 +23,7 @@ from .formula import evaluate
 from .justification import JustificationKind
 from .proof import Proof, ProofStep
 from .rules import Rule
-from .textmatch import contains_quote, number_matches, numbers_in, value_in_text
+from .textmatch import contains_quote, figure_matches, figures_in, numbers_in, value_in_text
 
 if TYPE_CHECKING:
     from .kernel import BeliefBase
@@ -243,7 +243,7 @@ class CitationCheck:
                 continue
             checked += 1
             quote = source.quote
-            if not quote:
+            if not quote or not quote.strip():
                 failures.append(
                     CheckResult(self.name, False, f"cites {source.name!r} without a quote", step.ref, Severity.WARNING)
                 )
@@ -299,8 +299,9 @@ class NumericProvenanceCheck:
     """Warns when a model-written claim states a number found nowhere in its support.
 
     This catches the model filling in a figure from its training data instead of from a belief.
-    Numbers are matched with rounding and common scales (so "4.1 billion" and "9.76%" match).
-    Small integers and years are ignored to keep the check quiet on ordinary prose.
+    Numbers are matched with rounding, at the scale their unit states ("4.1 billion", "$4.1B" and
+    "9.76%" match; "$4 million" does not match 4.3e9). Small integers, years, dates, times and
+    ordinals are ignored to keep the check quiet on ordinary prose.
     """
 
     name = "provenance"
@@ -325,10 +326,10 @@ class NumericProvenanceCheck:
             if not text:
                 continue
             antecedents = _antecedent_steps(step, by_ref)
-            candidates: list[float] = []
-            for value in [step.belief.value, *(s.belief.value for s in antecedents)]:
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    candidates.append(float(value))
+            # The step's own value counts only when a formula computed it; otherwise the model chose
+            # it, and a claim restating a number the model made up would vouch for itself.
+            values = [s.belief.value for s in antecedents] + ([step.belief.value] if j.formula else [])
+            candidates = [float(v) for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
             # Numbers also count as supported when they appear in an antecedent's claim, key or text
             # value: identifiers ("order:1043:status") and names ("iPhone 15") aren't figures.
             context_text = [step.belief.key]
@@ -336,11 +337,12 @@ class NumericProvenanceCheck:
                 context_text += [s.belief.claim, s.belief.key]
                 if isinstance(s.belief.value, str):
                     context_text.append(s.belief.value)
-            context_numbers = [n for text_part in context_text for n, _ in numbers_in(text_part)]
-            for number, decimals in numbers_in(str(text)):
-                if self._ignored(number, decimals):
+            context_numbers = {n for text_part in context_text for n, _ in numbers_in(text_part)}
+            for figure in figures_in(str(text), skip_dates=True):
+                number = figure.value
+                if self._ignored(number, figure.decimals):
                     continue
-                if number_matches(number, decimals, candidates) or number in context_numbers:
+                if figure_matches(figure, candidates) or number in context_numbers:
                     continue
                 failures.append(
                     CheckResult(
@@ -371,6 +373,10 @@ class Verifier:
         self.checks: list[Check] = list(checks) if checks is not None else [cls() for cls in DEFAULT_CHECKS]
 
     def verify(self, proof: Proof, *, kb: BeliefBase | None = None, at: datetime | None = None) -> VerificationReport:
+        """Run every check. ``at`` is the time to check validity against (default: now). A naive
+        ``at`` is taken as UTC, unless the proof itself was recorded on a naive clock."""
+        if at is not None and at.tzinfo is None and proof.created_at.tzinfo is not None:
+            at = at.replace(tzinfo=timezone.utc)
         ctx = VerificationContext(
             at=at or (kb.now() if kb is not None else utcnow()),
             kb=kb,

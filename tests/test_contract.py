@@ -68,7 +68,7 @@ def test_per_action_errors(action: str, message: str) -> None:
     parsed = parse_response('{"actions": [' + action + ', {"type": "answer", "text": "ok"}]}')
     assert parsed.actions == (Answer("ok"),)
     assert len(parsed.errors) >= 1 and message in parsed.errors[0]
-    assert parsed.errors[0].startswith("action 1:")
+    assert parsed.errors[0].startswith("action 1")
 
 
 @pytest.mark.parametrize("text", ["no json here", '{"foo": 1}', '{"actions": 5}', "42"])
@@ -81,7 +81,72 @@ def test_extract_json_prefers_whole_text() -> None:
     assert extract_json('{"a": {"b": 1}}') == {"a": {"b": 1}}
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        'Values: [4.3, 4.5]\n{"actions": [{"type": "answer", "text": "x"}]}',
+        'Args will be {"q": "Q2"}. {"actions": [{"type": "answer", "text": "x"}]}',
+        "{'actions': [{'type': 'answer', 'text': 'x', 'follows_from': None}]}",
+        '```json\n[1, 2]\n```\n```json\n{"actions": [{"type": "answer", "text": "x"}]}\n```',
+    ],
+)
+def test_extract_json_prefers_the_response_shaped_value(text: str) -> None:
+    (action,) = parse_response(text).actions
+    assert action == Answer("x")
+
+
+def test_invalid_json_error_says_where() -> None:
+    with pytest.raises(ContractViolation, match=r"not valid JSON \(.+ at line 1, column 2\)"):
+        parse_response("{actions: []}")
+
+
 def test_schema_shape() -> None:
     item = CONTRACT_SCHEMA["properties"]["actions"]["items"]
     assert item["properties"]["type"]["enum"] == ["call_tool", "cite", "claim", "answer"]
     assert item["additionalProperties"] is False
+
+
+def test_per_action_errors_say_which_action() -> None:
+    parsed = parse_response('{"actions": [{"type": "claim", "key": "growth", "follows_from": [1]}]}')
+    assert parsed.errors[0].startswith("action 1 (claim, key 'growth'): ")
+
+
+def test_unambiguous_slips_are_accepted() -> None:
+    parsed = parse_response(
+        '{"actions": [{"type": "claim", "key": "k", "value": 1, "confidence": "0.9"},'
+        ' {"type": "claim", "key": "j", "value": 1, "confidence": "80%"},'
+        ' {"type": "answer", "text": 42}]}'
+    )
+    assert parsed.errors == ()
+    first, second, answer = parsed.actions
+    assert isinstance(first, Claim) and first.confidence == 0.9
+    assert isinstance(second, Claim) and second.confidence == pytest.approx(0.8)
+    assert answer == Answer("42")
+
+
+def test_an_example_action_in_prose_does_not_displace_the_real_list() -> None:
+    text = (
+        'Actions: [{"type": "claim", "key": "g", "value": 0.1, "claim": "growth"},'
+        ' {"type": "answer", "text": "Growth was 10%", "follows_from": ["g"]}]'
+        ' Reminder: an answer looks like {"type": "answer", "text": "..."}'
+    )
+    claim_action, answer_action = parse_response(text).actions
+    assert isinstance(claim_action, Claim) and answer_action == Answer("Growth was 10%", ("g",))
+
+
+@pytest.mark.parametrize("value", ["{1, 2}", "b'ab'", "1+2j"])
+def test_python_literals_must_hold_json_values(value: str) -> None:
+    with pytest.raises(ContractViolation):
+        parse_response("{'actions': [{'type': 'claim', 'key': 'x', 'value': " + value + "}]}")
+
+
+def test_python_literal_tuples_become_lists() -> None:
+    (action,) = parse_response("{'actions': [{'type': 'claim', 'key': 'x', 'value': (1, 2)}]}").actions
+    assert isinstance(action, Claim) and action.value == [1, 2]
+
+
+def test_absurd_json_is_a_contract_violation_not_a_crash() -> None:
+    with pytest.raises(ContractViolation):
+        parse_response('{"actions": [{"type": "answer", "text": ' + "9" * 5000 + "}]}")
+    with pytest.raises(ContractViolation):
+        parse_response("[" * 100_000)

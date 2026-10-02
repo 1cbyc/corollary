@@ -45,6 +45,13 @@ def test_arithmetic(formula: str, expected: float) -> None:
         ("max(a=1)", "only these functions"),
         ("1" * 3000, "longer than"),
         ("(-8) ** 0.5", "real number"),
+        ("abs((-4) ** 0.5)", "real number"),
+        ("9" * 400, "cannot evaluate"),
+        ("(((9 ** 64) ** 64) ** 64) ** 64", "cannot evaluate"),
+        ("-" * 1500 + "1", "deeper than"),
+        ("1e309", "finite"),
+        ("0 * 1e309", "finite"),
+        ("_v0 + {n}", "unknown name '_v0'"),
     ],
 )
 def test_rejects(formula: str, message: str) -> None:
@@ -55,3 +62,23 @@ def test_rejects(formula: str, message: str) -> None:
 def test_formula_keys_in_order_without_duplicates() -> None:
     assert formula_keys("{b} + {a} * {b}") == ["b", "a"]
     assert formula_keys("1 + 2") == []
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), 10**400])
+def test_rejects_values_that_are_not_finite_floats(value: float) -> None:
+    with pytest.raises(FormulaError, match=r"finite|too large"):
+        evaluate("{x} * 2", {"x": value})
+
+
+def test_placeholder_keys_may_look_like_internal_names() -> None:
+    assert evaluate("{x_v1} + 1", {"x_v1": 2}) == 3
+
+
+def test_long_flat_sums_are_not_nesting() -> None:
+    assert evaluate("+".join(["{n}"] * 400), VALUES) == 1600
+    assert evaluate("10 - 2 - 3 * 2 / 4 ** 2 ** 0.5", VALUES) == pytest.approx(10 - 2 - 3 * 2 / 4**2**0.5)
+
+
+def test_round_needs_whole_digits() -> None:
+    with pytest.raises(FormulaError, match="whole number"):
+        evaluate("round(3.14159, 2.7)", VALUES)

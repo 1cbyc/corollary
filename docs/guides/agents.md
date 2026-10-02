@@ -33,7 +33,8 @@ report = agent.run("Compare Q2 and Q3 revenue and assess the growth trend.")
 | `repair_attempts` | `2` | Model calls per belief during `repair()` |
 | `self_consistency` | `1` | Samples per unverified claim; see [self-consistency](confidence.md#6-self-consistency-asking-more-than-once) |
 | `learn_from_checks` | `True` | Record verified formulas and citations in the trust ledger as the model's track record |
-| `system_prompt` | `SYSTEM_PROMPT` | The contract instructions; override with care |
+| `instructions` | `""` | Domain guidance shown on every step and every re-derivation (house style, language, ...) |
+| `system_prompt` | `SYSTEM_PROMPT` | The contract instructions; override with care. Prefer `instructions` for guidance |
 
 ## The run loop
 
@@ -51,7 +52,9 @@ Each step of `agent.run(task)`:
 5. **Feed back.** Rejections are shown to the model on the next step.
 
 The run ends at the first accepted answer, or when `max_steps` is reached (`report.completed` is then
-`False`).
+`False`). If the model fails (a refusal, a truncated response, an API error), the run stops and
+`report.error` holds the `ModelError`. Tool results and claims accepted before that stay in the belief
+base, so running the task again continues from them.
 
 ## The report
 
@@ -62,6 +65,7 @@ repaired answer.
 report.answer  # the believed answer text, or None
 report.belief  # the answer's Belief
 report.completed  # did the model answer within the step budget?
+report.error  # the ModelError that ended the run early, if any
 report.stale  # answered, but the answer has since lost its support
 report.proof  # the graph of beliefs the answer follows from
 report.verify()  # deterministic checks; verify(raise_on_error=True) raises on failure
@@ -72,6 +76,19 @@ report.steps  # StepRecord(index, prompt, response, accepted, rejected) per mode
 
 `report.steps` is how you debug an agent: each record holds the exact prompt the model saw and its raw
 response.
+
+### Logging
+
+The agent logs to the `corollary` logger and configures no handlers. Warnings cover model failures, tools
+that raise (with the traceback, which the model never sees) and tools that fail during `reverify()`.
+Each step's accepted and rejected actions are logged at `DEBUG`.
+
+```python
+import logging
+
+logging.basicConfig()
+logging.getLogger("corollary").setLevel(logging.DEBUG)
+```
 
 ## Tools
 
@@ -89,8 +106,12 @@ def quote(symbol: str) -> float:
 - **The docstring's first paragraph** is the description shown to the model, along with the signature.
 - **`trust`** is a level from the trust policy (`"high"`, `"medium"`, `"low"`) or a number in [0, 1].
 - **`ttl`** sets how long each result stays valid. See [Time and validity](time.md).
-- **Arguments are validated** against the function signature before the call. Unknown tools, bad
-  arguments and exceptions raised by the tool are rejected and reported to the model.
+- **Arguments are validated** against the function signature before the call. Arguments annotated
+  `str`, `int`, `float` or `bool` (or `X | None`) are type-checked when the model supplies them, and
+  unambiguous values are coerced: `"3"` becomes `3` for an `int`, `"true"` or `1` becomes `True` for a `bool`. Unknown tools, bad arguments and
+  exceptions raised by the tool are rejected and reported to the model.
+- **`async def` tools work too.** The runtime runs them to completion, on a worker thread with its own
+  event loop if it is itself called from inside one.
 - **`half_life`** makes each result's confidence fade, and **`origin`** declares an independence group
   (tools reading the same database). See [Confidence](confidence.md).
 - **The result becomes a premise** with source `tool:quote(symbol='ACME')`, stored under the key the model
@@ -130,6 +151,12 @@ generated from, plus earlier claims from the same response. The projector guaran
 have used anything else, so this is sound by construction: **a retracted fact can never survive in a
 conclusion**. The cost is over-retraction. Retracting any visible belief invalidates the claim, even one
 the model ignored.
+
+Documents are the one exception: they are shown to the model, but they are not beliefs, so a claim
+depends on a document only through a `cite`. The system prompt tells the model to cite what it takes from
+a document, and the verifier flags numbers that trace to nothing. Still, if you replace a document's text
+with `add_document`, nothing that read the old text is invalidated automatically: run the tasks that used
+it again, and run `report.verify()`, which re-checks every citation against the current text.
 
 **`"declared"`.** A claim depends on the keys it lists in `follows_from`, plus any keys in its formula.
 Cascades are sharper, but you are trusting the model's account of what it used.

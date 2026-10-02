@@ -27,6 +27,9 @@ def main() -> None:
     print("ANSWER:", report.answer)
     for rejection in report.rejections:
         print("  rejected:", rejection)
+    if not report.completed:
+        print("\nThe agent did not answer:", report.error or f"no answer within {agent.max_steps} steps")
+        return
     print("\nPROOF:\n" + report.proof.render())
     print("\n" + str(report.verify()))
 

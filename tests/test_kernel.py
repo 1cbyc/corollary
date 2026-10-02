@@ -422,3 +422,168 @@ def test_changes_buffer_is_net(kb: BeliefBase) -> None:
     kb.assert_("a", 1)
     assert [c.kind for c in kb.changes()] == [ChangeKind.IN]
     assert kb.changes() == []
+
+
+# -- robustness -------------------------------------------------------------------------------
+
+
+def test_naive_valid_until_is_rejected_before_anything_changes(kb: BeliefBase) -> None:
+    from datetime import datetime
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        kb.assert_("b", 2, source="tool:x", valid_until=datetime(2030, 1, 1))
+    assert kb.keys(status=None) == []
+
+
+def test_a_failed_assertion_leaves_the_base_unchanged(kb: BeliefBase, monkeypatch: pytest.MonkeyPatch) -> None:
+    kb.assert_("a", 1, source="tool:x")
+    before = kb.to_dict()
+    relabel = kb._relabel
+
+    def broken(seeds: list[str]) -> None:
+        monkeypatch.setattr(kb, "_relabel", relabel)  # fail once, then let the rollback relabel
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(kb, "_relabel", broken)
+    with pytest.raises(RuntimeError):
+        kb.assert_("a", 2, source="tool:y", supersede=True)
+    assert kb.status("a@1") is Status.IN
+    assert [b.ref for b in kb.revisions("a")] == ["a@1"]
+    assert BeliefBase.from_dict(kb.to_dict()).value("a") == 1
+    assert kb.to_dict()["beliefs"] == before["beliefs"]
+
+
+def test_a_lone_string_is_one_key_not_its_characters(kb: BeliefBase) -> None:
+    kb.assert_("price", 10, source="tool:x")
+    kb.derive("discounted", lambda p: p * 0.9, "price", unless="override")
+    support = kb.support("discounted")
+    assert support is not None and support.unless == ("override",)
+    kb.justify("double", 20, antecedents="price", source="model:m", inputs="price")
+    support = kb.support("double")
+    assert support is not None and support.antecedents == ("price@1",) and support.inputs == ("price",)
+    constraint = kb.add_constraint("positive", "price", lambda p: p > 0)
+    assert constraint.keys == ("price",)
+
+
+def test_supersede_resolves_the_conflict_when_the_value_already_exists(kb: BeliefBase) -> None:
+    kb.assert_("k", 1, source="tool:a")
+    kb.assert_("k", 2, source="tool:b")
+    assert [c.id for c in kb.conflicts()] == ["value:k"]
+    belief = kb.assert_("k", 2, source="tool:c", supersede=True)
+    assert belief.ref == "k@2"
+    assert kb.conflicts() == []
+    assert kb.status("k@1") is Status.OUT and kb.value("k") == 2
+
+
+def test_retracting_a_retracted_ref_does_not_blame_its_source_twice(kb: BeliefBase) -> None:
+    kb.assert_("a", 1, source="tool:x")
+    kb.retract("a@1", fault="source")
+    assert kb.retract("a@1", fault="source") == []
+    assert kb.ledger.record_of("tool:x").wrong == 1
+
+
+def test_resolve_with_an_ambiguous_key_asks_for_a_ref(kb: BeliefBase) -> None:
+    kb.assert_("k", 1, source="tool:a")
+    kb.assert_("k", 2, source="tool:b")
+    (conflict,) = kb.conflicts()
+    with pytest.raises(ValueError, match="several sides"):
+        kb.resolve(conflict, keep="k")
+    kb.resolve(conflict, keep="k@2")
+    assert kb.value("k") == 2
+
+
+def test_a_resolver_naming_refs_outside_the_conflict_is_an_error(kb: BeliefBase) -> None:
+    from corollary import Resolution
+
+    kb.assert_("k", 1, source="tool:a")
+    kb.assert_("k", 2, source="tool:b")
+    with pytest.raises(ValueError, match="nope@1"):
+        kb.resolve_conflicts(lambda c, _kb: Resolution(c.id, ("nope@1",), "bad"))
+
+
+def test_confidence_values_are_validated_everywhere() -> None:
+    from corollary import Rule
+    from corollary.kernel import Derived
+
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        Rule("r", lambda: 1, confidence=5.0)
+    with pytest.raises(ValueError, match="needs a name"):
+        Rule("", lambda: 1)
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        Derived(1, confidence=1.5)
+
+
+def test_propagation_settled(kb: BeliefBase) -> None:
+    kb.assert_("k", 1, source="tool:a")
+    kb.assert_("k", 2, source="tool:b")
+    result = kb.propagate()
+    assert not result.settled and result.conflicts
+    kb.resolve(result.conflicts[0], keep="k@2")
+    assert kb.propagate().settled
+
+
+def test_rules_can_be_replaced_and_same_named_functions_coexist(kb: BeliefBase) -> None:
+    kb.register_rule(growth)
+    kb.register_rule(rule(lambda a, b: 0, name="growth"), replace=True)
+    assert kb.rules["growth"].fn(1, 2) == 0
+
+    def make(factor: float):  # type: ignore[no-untyped-def]
+        def scale(x: float) -> float:
+            return x * factor
+
+        return scale
+
+    kb.assert_("x", 10)
+    assert kb.derive("double", make(2), "x").value == 20
+    assert kb.derive("triple", make(3), "x").value == 30
+    assert {"scale", "scale:2"} <= set(kb.rules)
+
+
+def test_auto_named_rules_never_reuse_a_name_a_snapshot_still_uses(kb: BeliefBase) -> None:
+    from corollary import Rule
+
+    def make(factor: float):  # type: ignore[no-untyped-def]
+        def scale(x: float) -> float:
+            return x * factor
+
+        return scale
+
+    kb.assert_("x", 1, source="tool:a")
+    kb.derive("a", make(1), "x")
+    kb.derive("b", make(2), "x")  # rule "scale:2"
+    with pytest.warns(UserWarning, match="scale:2"):
+        loaded = BeliefBase.from_dict(kb.to_dict(), rules=[Rule("scale", make(1))])
+    loaded.derive("c", make(10), "x")
+    assert loaded.support("c").rule not in {"scale", "scale:2"}  # type: ignore[union-attr]
+    loaded.register_rule(Rule("scale:4", make(4)))
+    loaded.derive("d", make(5), "x")  # skips the explicitly registered name too
+    assert loaded.value("d") == 5
+
+
+def test_rollback_restores_justification_order_and_ledger(kb: BeliefBase, monkeypatch: pytest.MonkeyPatch) -> None:
+    kb.assert_("x", 1, source="tool:a")
+    kb.assert_("x", 1, source="human:bob")
+    before = [j.id for j in kb.justifications("x")]
+    support = kb.support("x")
+    ledger_version = kb.ledger.version
+    relabel = kb._relabel
+
+    def broken(seeds: list[str]) -> None:
+        monkeypatch.setattr(kb, "_relabel", relabel)
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(kb, "_relabel", broken)
+    with pytest.raises(RuntimeError):
+        kb.assert_("x", 1, source="tool:a")  # a re-read: replaces tool:a's justification
+    assert [j.id for j in kb.justifications("x")] == before
+    assert kb.support("x") == support
+    monkeypatch.setattr(kb, "_relabel", broken)
+    with pytest.raises(RuntimeError):
+        kb.assert_("x", 1, source="tool:c")  # a confirmation that fails is not credited
+    assert kb.ledger.version == ledger_version
+
+
+def test_a_re_read_is_logged_as_a_renewal(kb: BeliefBase) -> None:
+    kb.assert_("x", 1, source="tool:a")
+    kb.assert_("x", 1, source="tool:a")
+    assert [e.action for e in kb.history][-1] == "renew"

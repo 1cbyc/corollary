@@ -47,7 +47,7 @@ The runtime executes the tool. Its return value becomes a **premise** with sourc
 | `claim` | no | Natural-language description |
 
 The quote must appear in the document (case- and whitespace-insensitive), and a numeric or string value
-must be stated in the quote. Numbers match across common scales, so `4.3 billion` states `4300000000`.
+must be stated in the quote. Numbers match at the scale their unit states, so `4.3 billion` states `4300000000`.
 See [Documents and citations](documents.md).
 
 ### `claim`
@@ -115,7 +115,9 @@ functions `abs`, `min`, `max`, `round`, `sqrt`, `log`, `exp` with positional arg
 
 Not allowed: names other than placeholders, attribute access, subscripts, strings, comprehensions, keyword
 arguments, or any other syntax. Formulas are evaluated by a restricted AST interpreter, never by `eval`,
-so an untrusted formula can't run code.
+so an untrusted formula can't run code. Every number is a float, and every intermediate result must be a
+finite real number, so a formula can't hang the process with huge powers either: overflow, `inf`, `nan`,
+complex numbers and nesting deeper than 100 levels are errors, fed back to the model like any other.
 
 A claim with a formula gets rule-level confidence, because the step was checked mechanically. The verifier
 re-executes every formula again when it checks a proof.
@@ -124,12 +126,17 @@ re-executes every formula again when it checks a proof.
 
 Models don't always produce clean JSON. The parser accepts:
 
-- a bare JSON object, or one inside a Markdown code fence, or embedded in surrounding prose;
+- a bare JSON object, or one inside a Markdown code fence, or embedded in surrounding prose. When the
+  response contains several JSON values, the first one shaped like a response wins, so a list of numbers
+  in a sentence before the actions is skipped;
 - a single action object (`{"type": "answer", ...}`) or a bare list of actions;
 - `args` as an object or as a JSON-encoded string;
-- `follows_from` as a list or a single string.
+- `follows_from` as a list or a single string;
+- `confidence` as a numeric string (`"0.9"`) or a percentage (`"90%"`), and an answer `text` that is a
+  bare number;
+- Python-style literals (single quotes, `True`, `None`) when nothing else parses.
 
-Everything else is strict.
+Everything else is strict. When nothing parses, the feedback says where the JSON broke.
 
 ## Structured output
 

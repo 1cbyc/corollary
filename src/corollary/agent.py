@@ -14,11 +14,12 @@ claim contract, and every action is validated before the belief base changes:
 from __future__ import annotations
 
 import enum
+import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from .belief import Belief, Source, SourceKind, Status, format_value, validate_key, values_equal
+from .belief import Belief, Source, SourceKind, Status, format_value, parse_ref, validate_key, values_equal
 from .changes import Change, Propagation
 from .conflict import Resolver
 from .contract import SYSTEM_PROMPT, Action, Answer, Cite, Claim, ToolCall, parse_response
@@ -36,6 +37,8 @@ from .trust import TrustPolicy
 from .verify import Check, VerificationReport
 
 _ANSWER_NOTE = "Answer the task: "
+
+log = logging.getLogger(__name__)
 
 
 class Dependencies(str, enum.Enum):
@@ -75,6 +78,9 @@ class Report:
     steps: tuple[StepRecord, ...] = ()
     changes: tuple[Change, ...] = ()
     """Everything that became ``IN`` or ``OUT`` during the run."""
+    error: ModelError | None = None
+    """The model error that ended the run early (a refusal, a truncated response, an API failure).
+    Everything the run established before it stays in the belief base and in ``steps``."""
 
     @property
     def belief(self) -> Belief | None:
@@ -151,6 +157,9 @@ class Agent:
             sample is one model call.
         learn_from_checks: Record the model's verified work (formulas and citations that check
             out, or don't) in the trust ledger, so its reliability is measured rather than assumed.
+        instructions: Domain guidance shown to the model on every step, under the task (house
+            style, what to answer in which language, ...). The claim contract stays in force.
+        system_prompt: The contract the model is held to. Replace it only to adapt the wording.
     """
 
     def __init__(
@@ -169,10 +178,13 @@ class Agent:
         repair_attempts: int = 2,
         self_consistency: int = 1,
         learn_from_checks: bool = True,
+        instructions: str = "",
         system_prompt: str = SYSTEM_PROMPT,
     ) -> None:
         if self_consistency < 1:
             raise ValueError("self_consistency must be at least 1")
+        if max_steps < 1:
+            raise ValueError("max_steps must be at least 1")
         self.model = resolve_model(model)
         self.kb = beliefs if beliefs is not None else BeliefBase(trust=trust)
         if trust is not None:
@@ -192,6 +204,7 @@ class Agent:
         self.repair_attempts = repair_attempts
         self.self_consistency = self_consistency
         self.learn_from_checks = learn_from_checks
+        self.instructions = instructions
         self.system_prompt = system_prompt
 
     @property
@@ -202,18 +215,33 @@ class Agent:
     # Running a task
     # ======================================================================================
 
-    def run(self, task: str, *, max_steps: int | None = None) -> Report:
-        """Work on ``task`` until the model answers or the step budget runs out."""
+    def run(self, task: str, *, max_steps: int | None = None, instructions: str = "") -> Report:
+        """Work on ``task`` until the model answers or the step budget runs out.
+
+        ``instructions`` are added to the agent's own for this run only.
+        """
+        guidance = "\n\n".join(part.strip() for part in (self.instructions, instructions) if part.strip())
         key = self._answer_key()
         steps: list[StepRecord] = []
         feedback: list[str] = []
-        for index in range(1, (max_steps or self.max_steps) + 1):
+        budget = self.max_steps if max_steps is None else max_steps
+        if budget < 1:
+            raise ValueError("max_steps must be at least 1")
+        for index in range(1, budget + 1):
             self.kb.refresh()
             if self.resolver is not None:
                 self.kb.resolve_conflicts(self.resolver)
-            projection = self.projector.project(self.kb, task=task, tools=list(self.tools.values()), feedback=feedback)
-            response = self.model.complete(self.system_prompt, projection.text)
+            projection = self.projector.project(
+                self.kb, task=task, tools=list(self.tools.values()), feedback=feedback, instructions=guidance
+            )
+            try:
+                response = self.model.complete(self.system_prompt, projection.text)
+            except ModelError as exc:
+                log.warning("model %s failed on step %d of %r: %s", self.model.name, index, task, exc)
+                steps.append(StepRecord(index, projection.text, "", (), (f"model error: {exc}",)))
+                return Report(task, key, self.kb, False, tuple(steps), tuple(self.kb.changes()), error=exc)
             accepted, rejected, answered = self._process(response, projection, key, task)
+            log.debug("step %d: accepted %s, rejected %s", index, accepted, rejected)
             steps.append(StepRecord(index, projection.text, response, tuple(accepted), tuple(rejected)))
             if answered:
                 return Report(task, key, self.kb, True, tuple(steps), tuple(self.kb.changes()))
@@ -241,7 +269,9 @@ class Agent:
 
     def _apply(self, action: Action, state: _StepState, answer_key: str, task: str) -> str:
         if isinstance(action, ToolCall):
-            return self._apply_tool_call(action, state)
+            return self._apply_tool_call(action, state, answer_key)
+        if isinstance(action, (Cite, Claim)) and action.key == answer_key:
+            raise ContractViolation(f"{answer_key!r} is reserved for the answer")
         if isinstance(action, Cite):
             try:
                 belief = self.kb.cite(
@@ -258,8 +288,6 @@ class Agent:
             self._learn(True, f"citation of {action.document!r} verified")
             return f"cited {belief.ref} from {action.document!r}"
         if isinstance(action, Claim):
-            if action.key == answer_key:
-                raise ContractViolation(f"{answer_key!r} is reserved for the answer")
             belief = self._apply_claim(
                 action.key,
                 action.value,
@@ -285,16 +313,19 @@ class Agent:
         )
         return f"answered as {belief.ref}"
 
-    def _apply_tool_call(self, action: ToolCall, state: _StepState) -> str:
+    def _apply_tool_call(self, action: ToolCall, state: _StepState, answer_key: str) -> str:
         t = self.tools.get(action.tool)
         if t is None:
             available = ", ".join(self.tools) or "none"
             raise ContractViolation(f"unknown tool {action.tool!r} (available: {available})")
         args = t.bind(action.args)
         key = validate_key(action.key or t.default_key(args))
+        if key == answer_key:
+            raise ContractViolation(f"{answer_key!r} is reserved for the answer")
         try:
-            value = t.fn(**args)
+            value = t.invoke(args)
         except Exception as exc:
+            log.warning("tool %r raised for arguments %r", t.name, args, exc_info=True)
             raise ContractViolation(f"tool {t.name!r} raised {type(exc).__name__}: {exc}") from exc
         belief = self._record_tool_result(t, args, key, value, action.claim)
         state.tool_keys.add(key)
@@ -329,26 +360,12 @@ class Agent:
         is_answer: bool = False,
     ) -> Belief:
         validate_key(key)
-        deps = list(dict.fromkeys([*follows_from, *(formula_keys(formula) if formula else [])]))
+        deps = _dependencies(follows_from, formula)
         for dep in deps:
             self._check_visible(dep, state)
         if formula is not None:
             values = {d: self._visible_value(d, state) for d in formula_keys(formula)}
-            computed = evaluate(formula, values)
-            if value is None:
-                value = computed
-            elif (
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not values_equal(computed, value, rel_tol=1e-6, abs_tol=1e-9)
-            ):
-                self._learn(False, f"formula for {key!r} did not reproduce the stated value")
-                raise ContractViolation(
-                    f"formula {formula!r} evaluates to {format_value(computed)}, "
-                    f"but the claim states {format_value(value)}"
-                )
-            else:
-                self._learn(True, f"formula for {key!r} verified")
+            value = self._checked_formula_value(key, formula, value, values)
         if value is None:
             raise ContractViolation(f"claim {key!r} has no value")
         existing = self.kb.get(key)
@@ -383,6 +400,25 @@ class Agent:
             inputs=[b.key for b in antecedents],
             note=note,
         )
+
+    def _checked_formula_value(self, key: str, formula: str, value: Any, values: Mapping[str, Any]) -> Any:
+        """Re-execute ``formula``: return the computed value when none was stated, the stated value
+        when the formula reproduces it, and reject the claim otherwise. Either way the model's
+        track record learns from it."""
+        computed = evaluate(formula, values)
+        if value is None:
+            return computed
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not values_equal(computed, value, rel_tol=1e-6, abs_tol=1e-9)
+        ):
+            self._learn(False, f"formula for {key!r} did not reproduce the stated value")
+            raise ContractViolation(
+                f"formula {formula!r} evaluates to {format_value(computed)}, but the claim states {format_value(value)}"
+            )
+        self._learn(True, f"formula for {key!r} verified")
+        return value
 
     @staticmethod
     def _certainty(stated: float | None) -> float:
@@ -471,9 +507,11 @@ class Agent:
                 continue
             args = just.source.args
             try:
-                value = t.fn(**args)
+                value = t.invoke(args)
             except Exception:
-                continue  # Stays stale; the next reverify() will try again.
+                # Stays stale; the next reverify() will try again.
+                log.warning("re-running tool %r for %s failed", t.name, belief.ref, exc_info=True)
+                continue
             self._record_tool_result(t, args, belief.key, value, belief.claim)
         return self.repair(include_kept=include_kept)
 
@@ -489,7 +527,7 @@ class Agent:
         just = self.kb.support(belief.ref)
         if just is None or just.kind is not JustificationKind.MODEL:
             raise CorollaryError(f"{key!r} is not supported by a model justification; nothing to narrow")
-        current = list(dict.fromkeys(self.kb._nodes[a].belief.key for a in just.antecedents))
+        current = list(dict.fromkeys(parse_ref(a)[0] for a in just.antecedents))
         pruned: list[str] = []
         calls = 0
         for candidate in list(current):
@@ -557,7 +595,12 @@ class Agent:
         feedback: list[str] = []
         for _ in range(max(1, self.repair_attempts)):
             projection = self.projector.project(
-                self.kb, task=task, scope=scope, feedback=feedback, include_documents=False
+                self.kb,
+                task=task,
+                scope=scope,
+                feedback=feedback,
+                instructions=self.instructions,
+                include_documents=False,
             )
             try:
                 response = self.model.complete(self.system_prompt, projection.text)
@@ -566,8 +609,11 @@ class Agent:
                 feedback = [str(exc)]
                 continue
             claims = [a for a in parsed.actions if isinstance(a, Claim) and a.key == key]
-            if not parsed.actions:
-                return None
+            if not parsed.actions and not parsed.errors:
+                return None  # The model says the beliefs are not sufficient.
+            if not claims and parsed.errors:
+                feedback = list(parsed.errors)
+                continue
             if not claims:
                 feedback = [f'respond with one "claim" action for key `{key}`']
                 continue
@@ -580,24 +626,14 @@ class Agent:
 
     def _validate_rederived(self, claim: Claim, projection: Projection, is_answer: bool) -> Derived:
         allowed = set(projection.keys)
-        deps = list(dict.fromkeys([*claim.follows_from, *(formula_keys(claim.formula) if claim.formula else [])]))
+        deps = _dependencies(claim.follows_from, claim.formula)
         outside = [d for d in deps if d not in allowed]
         if outside:
             raise ContractViolation(f"uses beliefs outside the provided context: {', '.join(outside)}")
         value = claim.value
         if claim.formula:
-            computed = evaluate(claim.formula, {k: projection.belief(k).value for k in formula_keys(claim.formula)})  # type: ignore[union-attr]
-            if value is None:
-                value = computed
-            elif (
-                not isinstance(value, (int, float))
-                or isinstance(value, bool)
-                or not values_equal(computed, value, rel_tol=1e-6, abs_tol=1e-9)
-            ):
-                self._learn(False, f"formula for {claim.key!r} did not reproduce the stated value")
-                raise ContractViolation(f"formula evaluates to {format_value(computed)}, not {format_value(value)}")
-            else:
-                self._learn(True, f"formula for {claim.key!r} verified")
+            values = {k: _required(projection.belief(k)).value for k in formula_keys(claim.formula)}
+            value = self._checked_formula_value(claim.key, claim.formula, value, values)
         if value is None:
             raise ContractViolation("the claim has no value")
         return Derived(
@@ -617,6 +653,16 @@ def _describe(action: Action) -> str:
     if isinstance(action, Claim):
         return f"claim {action.key!r}"
     return "answer"
+
+
+def _dependencies(follows_from: Sequence[str], formula: str | None) -> list[str]:
+    """The keys a claim rests on: the ones it lists, plus the ones its formula reads."""
+    return list(dict.fromkeys([*follows_from, *(formula_keys(formula) if formula else [])]))
+
+
+def _required(belief: Belief | None) -> Belief:
+    assert belief is not None  # formula keys were checked against the context first
+    return belief
 
 
 def _latest_tool_premise(justifications: Sequence[Justification]) -> Justification | None:

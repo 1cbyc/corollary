@@ -17,11 +17,14 @@ retraction scales with what depends on it, not with the size of the belief base.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import heapq
 import itertools
 import json
 import os
-from collections import defaultdict
+import warnings
+from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
@@ -29,6 +32,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ._io import write_atomically
 from .belief import Belief, Source, SourceKind, Status, format_value, parse_ref, utcnow, validate_key, values_equal
 from .changes import Change, ChangeKind, Pending, Propagation
 from .conflict import Conflict, ConflictKind, Constraint, Resolution, Resolver, describe_values
@@ -93,6 +97,10 @@ class Derived:
     formula: str | None = None
     confidence: float | None = None
     antecedents: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.confidence is not None:
+            _check_confidence(self.confidence)
 
 
 Rederiver = Callable[[Rederivation], "Derived | None"]
@@ -234,13 +242,31 @@ class BeliefBase:
             )
         conf = self.trust.confidence_for(src) if confidence is None else _check_confidence(confidence)
         until = valid_until if valid_until is not None else (self.now() + ttl if ttl is not None else None)
+        if until is not None and (until.tzinfo is None) != (self.now().tzinfo is None):
+            kind = "naive" if self.now().tzinfo is None else "timezone-aware"
+            raise ValueError(f"valid_until must be {kind}, like the belief base's clock")
 
         target = self._matching_node(key, value, allow_expired=True)
-        if target is not None:
-            renewing = target.status is Status.OUT
-            if not renewing:
-                self._credit_confirmation(target, src)
-            self._hints[target.ref] = f"renewed by {src}" if renewing else f"corroborated by {src}"
+        created = target is None
+        if target is None:
+            target = self._new_node(key, value, source=src, claim=claim, confidence=conf, metadata=metadata)
+        superseded = [n for n in self._in_nodes(key) if n is not target] if supersede else []
+        for old in superseded:
+            old.retracted, old.retract_reason = True, f"superseded by {target.ref}"
+            self._hints[old.ref] = old.retract_reason
+        renewing = not created and target.status is Status.OUT
+        # The same source saying the same thing again (a re-read, a refresh) replaces its earlier
+        # justification: it is not new evidence, and it must not pile up or count as confirmation.
+        repeated = [] if created else [j for j in target.justifications if j.is_premise and j.source == src]
+        positions = [target.justifications.index(j) for j in repeated]
+        confirming = not created and not renewing and not repeated
+        if created:
+            self._hints[target.ref] = f"asserted by {src}"
+        else:
+            self._hints[target.ref] = f"renewed by {src}" if renewing or repeated else f"corroborated by {src}"
+        for j in repeated:
+            self._unlink(target, j)
+        try:
             self._add_justification(
                 target,
                 kind=JustificationKind.PREMISE,
@@ -248,36 +274,38 @@ class BeliefBase:
                 confidence=conf,
                 valid_until=until,
                 half_life=half_life,
+                extra_seeds=[n.ref for n in superseded],
+                created=created,
             )
-            self._log("renew" if renewing else "support", target.ref, f"by {src}")
-            return target.belief
-
-        superseded = self._in_nodes(key) if supersede else []
-        node = self._new_node(key, value, source=src, claim=claim, confidence=conf, metadata=metadata)
+        except BaseException:
+            for j, position in zip(repeated, positions, strict=True):
+                self._link(target, j)
+                target.justifications.remove(j)  # back where it was: support is chosen by position
+                target.justifications.insert(position, j)
+            for old in superseded:
+                old.retracted, old.retract_reason = False, ""
+            self._relabel([target.ref, *(n.ref for n in superseded)] if repeated else [n.ref for n in superseded])
+            raise
+        if confirming:  # only once the assertion has stuck
+            self._credit_confirmation(target, src)
         for old in superseded:
-            old.retracted, old.retract_reason = True, f"superseded by {node.ref}"
-            self._hints[old.ref] = f"superseded by {node.ref}"
             self._log("retract", old.ref, old.retract_reason)
-        self._hints[node.ref] = f"asserted by {src}"
-        self._add_justification(
-            node,
-            kind=JustificationKind.PREMISE,
-            source=src,
-            confidence=conf,
-            valid_until=until,
-            half_life=half_life,
-            extra_seeds=[n.ref for n in superseded],
-            created=True,
-        )
-        self._log("assert", node.ref, f"= {format_value(value)} by {src}")
-        return node.belief
+        if created:
+            self._log("assert", target.ref, f"= {format_value(value)} by {src}")
+        else:
+            self._log("renew" if renewing or repeated else "support", target.ref, f"by {src}")
+        return target.belief
 
     def assume(self, key: str, value: Any, *, by: str = "user", **kwargs: Any) -> Belief:
         """Assert a working hypothesis. Assumptions are premises the verifier flags as ungrounded."""
         return self.assert_(key, value, source=Source.assumption(by), **kwargs)
 
     def add_document(self, name: str, text: str) -> None:
-        """Register a document so beliefs can cite it and the verifier can check those citations."""
+        """Register a document so beliefs can cite it and the verifier can check those citations.
+
+        Registering a name again replaces its text. Beliefs cited from the old text are not
+        retracted; the verifier re-checks their quotes against the new text.
+        """
         if not name:
             raise ValueError("document name must not be empty")
         self._documents[name] = text
@@ -318,11 +346,16 @@ class BeliefBase:
     # Deriving conclusions
     # ======================================================================================
 
-    def register_rule(self, r: Rule) -> Rule:
-        """Make a rule available for derivation, automatic re-derivation and proof replay."""
+    def register_rule(self, r: Rule, *, replace: bool = False) -> Rule:
+        """Make a rule available for derivation, automatic re-derivation and proof replay.
+
+        A different rule with the same name is an error unless ``replace=True`` (for example when
+        re-running a notebook cell). Beliefs already derived keep their values until an input
+        changes; derive them again to apply the new function now.
+        """
         existing = self._rules.get(r.name)
-        if existing is not None and existing.fn is not r.fn:
-            raise RuleError(f"a different rule named {r.name!r} is already registered")
+        if existing is not None and existing.fn is not r.fn and not replace:
+            raise RuleError(f"a different rule named {r.name!r} is already registered; pass replace=True to replace it")
         self._rules[r.name] = r
         return r
 
@@ -345,6 +378,7 @@ class BeliefBase:
         makes the derivation non-monotonic: it holds only while none of those keys is believed.
         When an input later changes, :meth:`propagate` re-runs the rule automatically.
         """
+        self.refresh()  # never derive from evidence that has expired since the last check
         r = self._coerce_rule(rule)
         nodes = [self._resolve_antecedent(item) for item in inputs]
         try:
@@ -357,7 +391,7 @@ class BeliefBase:
             kind=JustificationKind.RULE,
             antecedents=tuple(n.ref for n in nodes),
             inputs=tuple(n.belief.key for n in nodes),
-            unless=tuple(unless),
+            unless=_keys(unless),
             source=Source.rule(r.name),
             rule=r.name,
             confidence=r.confidence,
@@ -392,7 +426,8 @@ class BeliefBase:
         applied on top when confidence is computed; see :meth:`confidence`.
         """
         src = Source.parse(source)
-        nodes = [self._resolve_antecedent(item) for item in antecedents]
+        self.refresh()  # never conclude from evidence that has expired since the last check
+        nodes = [self._resolve_antecedent(item) for item in _keys(antecedents)]
         if formula is not None:
             values = {n.belief.key: n.belief.value for n in nodes}
             missing = [k for k in formula_keys(formula) if k not in values]
@@ -409,8 +444,8 @@ class BeliefBase:
             value,
             kind=JustificationKind.MODEL,
             antecedents=tuple(n.ref for n in nodes),
-            inputs=tuple(inputs) if inputs is not None else tuple(n.belief.key for n in nodes),
-            unless=tuple(unless),
+            inputs=_keys(inputs) if inputs is not None else tuple(n.belief.key for n in nodes),
+            unless=_keys(unless),
             source=src,
             formula=formula,
             confidence=conf,
@@ -442,7 +477,10 @@ class BeliefBase:
             raise ValueError(f"fault must be 'none' or 'source', got {fault!r}")
         key, revision = parse_ref(key_or_ref)
         if revision is not None:
-            nodes = [self._node(key_or_ref)]
+            node = self._node(key_or_ref)
+            if node.retracted:
+                return []  # Already withdrawn; retracting again must not blame its sources twice.
+            nodes = [node]
         else:
             self._require_key(key)
             nodes = self._in_nodes(key)
@@ -541,6 +579,10 @@ class BeliefBase:
     def refresh(self) -> list[Belief]:
         """Re-check validity windows against the clock. Returns beliefs that just expired."""
         now = self.now()
+        # Forget beliefs that no longer have any evidence with a validity window.
+        self._expiring = {
+            ref for ref in self._expiring if any(j.valid_until is not None for j in self._nodes[ref].justifications)
+        }
         seeds = [
             ref
             for ref in self._expiring
@@ -581,17 +623,33 @@ class BeliefBase:
             key: {k for j in n.justifications if j.rederivable for k in j.inputs if k in by_key and k != key}
             for key, n in by_key.items()
         }
-        remaining = sorted(by_key, key=lambda k: (by_key[k].belief.created_at, k))
+
+        def tie_break(key: str) -> tuple[datetime, str]:
+            return by_key[key].belief.created_at, key
+
+        # Kahn's algorithm, always taking the earliest ready candidate: linear in the graph size.
+        users: dict[str, list[str]] = defaultdict(list)
+        for key, needed in deps.items():
+            for dep in needed:
+                users[dep].append(key)
+        waiting = {key: len(needed) for key, needed in deps.items()}
+        ready = [(tie_break(k), k) for k, n in waiting.items() if n == 0]
+        heapq.heapify(ready)
         ordered: list[_Node] = []
         placed: set[str] = set()
-        while remaining:
-            ready = [k for k in remaining if deps[k] <= placed]
-            if not ready:  # a cycle among candidates: keep the remaining ones in tie-break order
-                ready = remaining
-            for k in ready:
-                ordered.append(by_key[k])
-                placed.add(k)
-            remaining = [k for k in remaining if k not in placed]
+        while len(placed) < len(by_key):
+            if not ready:  # a cycle among candidates: release its earliest member
+                key = min((k for k in by_key if k not in placed), key=tie_break)
+                heapq.heappush(ready, (tie_break(key), key))
+            _, key = heapq.heappop(ready)
+            if key in placed:
+                continue
+            placed.add(key)
+            ordered.append(by_key[key])
+            for user in users[key]:
+                waiting[user] -= 1
+                if waiting[user] == 0 and user not in placed:
+                    heapq.heappush(ready, (tie_break(user), user))
         return ordered
 
     def _try_rederive(
@@ -724,17 +782,14 @@ class BeliefBase:
         if isinstance(constraint, str):
             if keys is None or predicate is None:
                 raise ValueError("add_constraint(name, keys, predicate) requires keys and a predicate")
-            constraint = Constraint(constraint, tuple(keys), predicate, description)
+            constraint = Constraint(constraint, _keys(keys), predicate, description)
         self._constraints[constraint.name] = constraint
         return constraint
 
     def conflicts(self) -> list[Conflict]:
         """All open conflicts: keys with incompatible ``IN`` values, and violated constraints."""
         found: list[Conflict] = []
-        for key in self._revisions:
-            nodes = self._in_nodes(key)
-            if len(nodes) < 2 or all(values_equal(nodes[0].belief.value, n.belief.value) for n in nodes[1:]):
-                continue
+        for key, nodes in self._value_conflicts():
             beliefs = tuple(n.belief for n in nodes)
             found.append(
                 Conflict(
@@ -774,7 +829,17 @@ class BeliefBase:
 
     def conflicted_keys(self) -> set[str]:
         """Keys involved in a *value* conflict (constraint conflicts don't block usage)."""
-        return {c.subject for c in self.conflicts() if c.kind is ConflictKind.VALUE}
+        return {key for key, _ in self._value_conflicts()}
+
+    def _value_conflicts(self) -> Iterator[tuple[str, list[_Node]]]:
+        """Keys with incompatible ``IN`` values, and those revisions. Only keys with several
+        revisions can conflict, so the common single-revision key costs one length check."""
+        for key, refs in self._revisions.items():
+            if len(refs) < 2:
+                continue
+            nodes = self._in_nodes(key)
+            if len(nodes) > 1 and any(not values_equal(nodes[0].belief.value, n.belief.value) for n in nodes[1:]):
+                yield key, nodes
 
     def resolve(
         self,
@@ -794,7 +859,14 @@ class BeliefBase:
         """
         if (keep is None) == (retract is None):
             raise ValueError("pass exactly one of keep= or retract=")
-        chosen = {self._node(_as_ref(self, x)).ref for x in _as_list(keep if keep is not None else retract)}
+        chosen: set[str] = set()
+        for item in _as_list(keep if keep is not None else retract):
+            sides = [r for r in conflict.refs if isinstance(item, str) and parse_ref(r)[0] == item]
+            if len(sides) > 1:
+                raise ValueError(
+                    f"{item!r} is on several sides of conflict {conflict.id} ({', '.join(sides)}); pass a ref"
+                )
+            chosen.add(sides[0] if sides else self._node(_as_ref(self, item)).ref)
         unknown = chosen - set(conflict.refs)
         if unknown:
             raise ValueError(f"{', '.join(sorted(unknown))} are not part of conflict {conflict.id}")
@@ -826,6 +898,12 @@ class BeliefBase:
                 decision = resolver(conflict, self)
                 if decision is None or not decision.retract:
                     continue
+                unknown = sorted(set(decision.retract) - set(conflict.refs))
+                if unknown:
+                    raise ValueError(
+                        f"resolver {resolver!r} retracts {', '.join(unknown)}, "
+                        f"which are not part of conflict {conflict.id}"
+                    )
                 if not self._apply_resolution(conflict, decision):
                     continue
                 applied.append(decision)
@@ -918,7 +996,13 @@ class BeliefBase:
         """
         node = self._resolve(key_or_ref)
         now = self._confidence_time()
-        epoch = (self._version, self.ledger.version, id(self.trust), now if self._decaying else None)
+        epoch = (
+            self._version,
+            self.ledger.version,
+            id(self.trust),
+            self.trust.fingerprint(),
+            now if self._time_dependent else None,
+        )
         if epoch != self._conf_epoch:
             self._conf_cache, self._conf_epoch = {}, epoch
         if node.ref not in self._conf_cache:
@@ -977,9 +1061,9 @@ class BeliefBase:
         """Beliefs whose justifications use this one (directly, or anywhere downstream)."""
         start = self._resolve(key_or_ref)
         seen: dict[str, None] = {}
-        frontier = [start.ref]
+        frontier = deque([start.ref])
         while frontier:
-            ref = frontier.pop(0)
+            ref = frontier.popleft()
             for nxt in self._successors(ref):
                 if nxt not in seen and nxt != start.ref:
                     seen[nxt] = None
@@ -1082,46 +1166,67 @@ class BeliefBase:
     ) -> BeliefBase:
         """Rebuild a base from :meth:`to_dict`. Pass ``ledger=`` to attach a shared trust ledger;
         otherwise the snapshot's own ledger is restored, if it has one."""
+        return cls._load_data(
+            data, rules=rules, constraints=constraints, trust=trust, clock=clock, ledger=ledger, stacklevel=3
+        )
+
+    @classmethod
+    def _load_data(
+        cls,
+        data: Mapping[str, Any],
+        *,
+        rules: Iterable[Rule] = (),
+        constraints: Iterable[Constraint] = (),
+        trust: TrustPolicy | None = None,
+        clock: Callable[[], datetime] | None = None,
+        ledger: TrustLedger | None = None,
+        stacklevel: int,
+    ) -> BeliefBase:
         if data.get("format") != _FORMAT:
             raise ValueError("not a Corollary belief base snapshot")
         version = int(data.get("version", 0))
         if version > _FORMAT_VERSION:
             raise ValueError(f"snapshot version {data['version']} is newer than this library supports")
-        if ledger is None and data.get("ledger"):
-            kb = cls(
-                trust=trust,
-                clock=clock,
-                rules=rules,
-                constraints=constraints,
-                ledger=TrustLedger.from_dict(data["ledger"]),
+        with _corrupt_snapshot_errors():
+            saved_ledger = TrustLedger.from_dict(data["ledger"]) if ledger is None and data.get("ledger") else None
+        # Built outside the guard: a mistake in the caller's own arguments is not a corrupt snapshot.
+        kb = cls(trust=trust, clock=clock, rules=rules, constraints=constraints, ledger=saved_ledger or ledger)
+        kb._owns_ledger = saved_ledger is not None or kb._owns_ledger
+        with _corrupt_snapshot_errors():
+            kb._restore(data, version)
+        missing = sorted({j.rule for j in kb._justifications.values() if j.rule and j.rule not in kb._rules})
+        if missing:
+            warnings.warn(
+                f"the snapshot uses rules that were not passed to load(): {', '.join(missing)}. Beliefs "
+                "derived by them can't be re-derived or replayed by the verifier until you register them.",
+                stacklevel=stacklevel,
             )
-            kb._owns_ledger = True
-        else:
-            kb = cls(trust=trust, clock=clock, rules=rules, constraints=constraints, ledger=ledger)
+        return kb
+
+    def _restore(self, data: Mapping[str, Any], version: int) -> None:
         for item in data["beliefs"]:
             belief = Belief.from_dict(item["belief"])
             node = _Node(belief, retracted=bool(item.get("retracted")), retract_reason=item.get("retract_reason", ""))
-            kb._nodes[belief.ref] = node
-            kb._revisions.setdefault(belief.key, []).append(belief.ref)
+            self._nodes[belief.ref] = node
+            self._revisions.setdefault(belief.key, []).append(belief.ref)
         max_id = 0
         for raw in data["justifications"]:
             j = Justification.from_dict(raw)
             if version < 2:
-                j = kb._migrate_v1_justification(j)
-            kb._link(kb._nodes[j.conclusion], j)
+                j = self._migrate_v1_justification(j)
+            self._link(self._nodes[j.conclusion], j)
             if j.id[1:].isdigit():
                 max_id = max(max_id, int(j.id[1:]))
-        kb._ids = itertools.count(max_id + 1)
-        kb._documents = dict(data.get("documents", {}))
-        kb._history = [
+        self._ids = itertools.count(max_id + 1)
+        self._documents = dict(data.get("documents", {}))
+        self._history = [
             Event(datetime.fromisoformat(e["at"]), e["action"], e["ref"], e.get("detail", ""))
             for e in data.get("history", [])
         ]
-        kb._relabel(list(kb._nodes))
-        kb._baseline.clear()
-        kb._hints.clear()
-        kb._reasons = dict(data.get("reasons", {}))  # relabeling on load is not a real change
-        return kb
+        self._relabel(list(self._nodes))
+        self._baseline.clear()
+        self._hints.clear()
+        self._reasons = dict(data.get("reasons", {}))  # relabeling on load is not a real change
 
     def _migrate_v1_justification(self, j: Justification) -> Justification:
         """Version 1 stored model steps with the model's trust folded into ``confidence``; version 2
@@ -1132,13 +1237,14 @@ class BeliefBase:
         return dataclasses.replace(j, confidence=min(1.0, j.confidence / base) if base else j.confidence)
 
     def save(self, path: str | os.PathLike[str]) -> None:
-        """Write a JSON snapshot. Values must be JSON-serializable."""
-        Path(path).write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        """Write a JSON snapshot. Values must be JSON-serializable. The write is atomic: a crash
+        mid-write leaves the previous snapshot intact."""
+        write_atomically(path, json.dumps(self.to_dict(), indent=2))
 
     @classmethod
     def load(cls, path: str | os.PathLike[str], **kwargs: Any) -> BeliefBase:
         """Load a snapshot written by :meth:`save`. Pass ``rules=`` to re-link derivation rules."""
-        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")), **kwargs)
+        return cls._load_data(json.loads(Path(path).read_text(encoding="utf-8")), stacklevel=3, **kwargs)
 
     # ======================================================================================
     # Internals: graph construction
@@ -1177,6 +1283,7 @@ class BeliefBase:
         if not refs:
             del self._revisions[node.belief.key]
         del self._nodes[node.ref]
+        self._expiring.discard(node.ref)
         self._baseline.pop(node.ref, None)
         self._hints.pop(node.ref, None)
 
@@ -1242,7 +1349,9 @@ class BeliefBase:
         seeds = [node.ref, *extra_seeds]
         try:
             self._relabel(seeds)
-        except CircularDefeatError:
+        except BaseException:
+            # Leave the graph as it was, whatever went wrong: a half-linked node would break
+            # every later query, and saving.
             self._unlink(node, j)
             if created:
                 self._discard_node(node)
@@ -1317,10 +1426,16 @@ class BeliefBase:
                 if existing.fn is r:
                     return existing
             name = getattr(r, "__name__", "rule")
-            if name == "<lambda>":
-                # Anonymous rules get a unique name. Use named rules if the base will be persisted,
-                # since only names survive save()/load().
-                name = f"lambda:{sum(1 for n in self._rules if n.startswith('lambda:')) + 1}"
+            taken = set(self._rules) | {j.rule for j in self._justifications.values() if j.rule}
+            if name == "<lambda>" or name in taken:
+                # Anonymous functions, and different functions sharing a name (closures made by one
+                # factory), get a unique name: one no rule and no existing belief uses, so a loaded
+                # snapshot's beliefs never get re-linked to the wrong function. Use named rules if the
+                # base will be persisted, since only names survive save()/load().
+                stem, n = ("lambda", 1) if name == "<lambda>" else (name, 2)  # the first one is plain `name`
+                while f"{stem}:{n}" in taken:
+                    n += 1
+                name = f"{stem}:{n}"
             return self.register_rule(Rule(name=name, fn=r))
         raise TypeError(f"expected a Rule, a callable or a rule name, got {type(r).__name__}")
 
@@ -1535,11 +1650,16 @@ class BeliefBase:
     # Internals: confidence and the trust ledger
     # ======================================================================================
 
+    @property
+    def _time_dependent(self) -> bool:
+        """Whether confidence changes with time alone: evidence decay, or a ledger that forgets."""
+        return self._decaying or self.ledger.memory_half_life is not None
+
     def _confidence_time(self) -> datetime:
         # With decay, confidence depends on time. Millisecond granularity lets repeated queries
         # in one step share the cache without any meaningful loss of precision.
         now = self.now()
-        return now.replace(microsecond=now.microsecond // 1000 * 1000) if self._decaying else now
+        return now.replace(microsecond=now.microsecond // 1000 * 1000) if self._time_dependent else now
 
     def _compute_confidence(self, root: str, now: datetime) -> None:
         """Fill the cache for ``root`` and everything its confidence depends on.
@@ -1549,21 +1669,25 @@ class BeliefBase:
         values in [0, 1], noisy-OR over premises only), so support cycles cannot inflate values
         and iteration converges.
         """
+        # Postorder: every belief comes after what it depends on, so an acyclic graph settles in
+        # a single pass (plus one to confirm); only support cycles need more.
         order: list[str] = []
         seen: set[str] = set()
-        stack = [root]
+        stack: list[tuple[str, bool]] = [(root, False)]
         while stack:
-            ref = stack.pop()
+            ref, expanded = stack.pop()
+            if expanded:
+                order.append(ref)
+                continue
             if ref in seen or ref in self._conf_cache:
                 continue
             seen.add(ref)
-            order.append(ref)
+            stack.append((ref, True))
             node = self._nodes[ref]
             if node.status is Status.IN:
                 for j in node.justifications:
                     if self._valid(j, now):
-                        stack.extend(j.antecedents)
-        order.reverse()  # dependencies first, so most graphs settle in one pass
+                        stack.extend((a, False) for a in j.antecedents if a not in seen)
         values = dict.fromkeys(order, 0.0)
 
         def get(ref: str) -> float:
@@ -1689,6 +1813,20 @@ def _numeric_match(computed: float, stated: Any) -> bool:
     if isinstance(stated, bool) or not isinstance(stated, (int, float)):
         return False
     return values_equal(computed, stated, rel_tol=1e-6, abs_tol=1e-9)
+
+
+@contextlib.contextmanager
+def _corrupt_snapshot_errors() -> Iterator[None]:
+    """Report a snapshot whose data has the wrong shape as one clear error."""
+    try:
+        yield
+    except (KeyError, TypeError, IndexError, AttributeError) as exc:
+        raise ValueError(f"corrupt Corollary snapshot: missing or malformed {exc}") from exc
+
+
+def _keys(items: str | Iterable[str]) -> tuple[str, ...]:
+    """Keys from an iterable, treating a lone string as one key rather than as its characters."""
+    return (items,) if isinstance(items, str) else tuple(items)
 
 
 def _as_list(items: str | Belief | Iterable[str | Belief] | None) -> list[str | Belief]:

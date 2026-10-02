@@ -9,7 +9,9 @@ and are ``IN``, formulas reproduce values, quotes appear in documents) before ac
 
 from __future__ import annotations
 
+import ast
 import json
+import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -138,23 +140,106 @@ _FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
 def extract_json(text: str) -> Any:
-    """Find the JSON payload in a model response (bare, fenced, or embedded in prose)."""
+    """Find the JSON payload in a model response (bare, fenced, or embedded in prose).
+
+    A response may contain several JSON values, for example a list of numbers in a sentence
+    before the actions. An object with ``actions`` wins; otherwise the first single action or list
+    of actions does. Python-style literals (single quotes, ``True``, ``None``) are accepted as a
+    last resort, as long as they hold only JSON values.
+    """
     stripped = text.strip()
-    candidates = [stripped]
-    candidates += [m.group(1).strip() for m in _FENCE.finditer(text)]
-    for candidate in candidates:
+    blocks = [stripped, *(m.group(1).strip() for m in _FENCE.finditer(text))]
+    found: list[Any] = []
+    error: json.JSONDecodeError | None = None
+    for block in blocks:
         try:
-            return json.loads(candidate)
-        except (json.JSONDecodeError, ValueError):
-            pass
-    decoder = json.JSONDecoder()
-    for start in (i for i, ch in enumerate(text) if ch in "{["):
-        try:
-            payload, _ = decoder.raw_decode(text, start)
-            return payload
-        except json.JSONDecodeError:
+            found.append(json.loads(block))
+        except json.JSONDecodeError as exc:
+            error = error or exc
+        except (ValueError, RecursionError):  # an integer with thousands of digits, absurd nesting
             continue
-    raise ContractViolation('response is not valid JSON; reply with a single JSON object {"actions": [...]}')
+    whole_block_decoded = bool(found)
+    if not any(_shape(p) < _NOT_A_RESPONSE for p in found):
+        found += _embedded_json(text)
+    if not any(_shape(p) < _NOT_A_RESPONSE for p in found):
+        found += _python_literals(blocks)
+    if not any(_shape(p) < _NOT_A_RESPONSE for p in found) and not whole_block_decoded:
+        # Only fragments decoded (say, the "[]" inside a malformed object): the parse error of the
+        # response itself tells the model more than "each action must be a JSON object" would.
+        found = []
+    if not found:
+        detail = f" ({error.msg} at line {error.lineno}, column {error.colno})" if error else ""
+        raise ContractViolation(
+            f'response is not valid JSON{detail}; reply with a single JSON object {{"actions": [...]}}'
+        )
+    return min(found, key=_shape)  # min() keeps the first of equally shaped candidates
+
+
+_NOT_A_RESPONSE = 3
+
+
+def _shape(payload: Any) -> int:
+    """How much ``payload`` looks like a contract response; lower is better."""
+    if isinstance(payload, dict):
+        return 0 if "actions" in payload else 1 if "type" in payload else _NOT_A_RESPONSE
+    if isinstance(payload, list) and payload and all(isinstance(item, dict) for item in payload):
+        # A list of actions is as good as a single one, so an example action quoted later in the
+        # prose can't displace the real list that came first.
+        return 1 if any("type" in item for item in payload) else 2
+    return _NOT_A_RESPONSE
+
+
+_MAX_DECODE_ATTEMPTS = 200
+
+
+def _embedded_json(text: str) -> list[Any]:
+    decoder = json.JSONDecoder()
+    found: list[Any] = []
+    position = 0
+    failures = 0
+    while (start := _next_bracket(text, position)) != -1:
+        try:
+            payload, end = decoder.raw_decode(text, start)
+        except (ValueError, RecursionError):
+            # Each failed attempt can scan to the end of the text, so a response full of brackets
+            # ("[[[[...") would take quadratic time. Real responses need only a few attempts.
+            failures += 1
+            if failures > _MAX_DECODE_ATTEMPTS:
+                break
+            position = start + 1
+            continue
+        found.append(payload)
+        position = end  # Skip the inside of a decoded value, so its parts aren't candidates too.
+    return found
+
+
+def _next_bracket(text: str, position: int) -> int:
+    hits = [i for i in (text.find("{", position), text.find("[", position)) if i != -1]
+    return min(hits, default=-1)
+
+
+def _python_literals(blocks: list[str]) -> list[Any]:
+    found: list[Any] = []
+    for block in blocks:
+        try:
+            payload = _json_values(ast.literal_eval(block))
+        except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+            continue
+        if _shape(payload) < _NOT_A_RESPONSE:
+            found.append(payload)
+    return found
+
+
+def _json_values(value: Any) -> Any:
+    """``value`` with tuples as lists, or ``TypeError`` if it holds anything JSON can't (a set,
+    bytes, a complex number), so a Python literal can't put an unsaveable value in the base."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_values(v) for v in value]
+    if isinstance(value, dict) and all(isinstance(k, str) for k in value):
+        return {k: _json_values(v) for k, v in value.items()}
+    raise TypeError(f"{type(value).__name__} is not a JSON value")
 
 
 def parse_response(text: str) -> ParsedResponse:
@@ -177,8 +262,32 @@ def parse_response(text: str) -> ParsedResponse:
         try:
             actions.append(parse_action(item))
         except ContractViolation as exc:
-            errors.extend(f"action {i + 1}: {e}" for e in exc.errors)
+            # The model never sees its previous response, so say which action this was.
+            errors.extend(f"action {i + 1}{_label(item)}: {e}" for e in exc.errors)
     return ParsedResponse(tuple(actions), tuple(errors))
+
+
+def _fraction(text: str) -> float | None:
+    """``"0.9"`` -> 0.9 and ``"90%"`` -> 0.9; ``None`` when ``text`` isn't a number."""
+    text = text.strip()
+    percent = text.endswith("%")
+    try:
+        number = float(text.rstrip("%").strip())
+    except ValueError:
+        return None
+    return number / 100 if percent else number
+
+
+def _label(item: Any) -> str:
+    """A short reminder of what an action was, e.g. ``(claim, key 'growth')``."""
+    if not isinstance(item, dict):
+        return ""
+    parts = [str(item["type"])] if isinstance(item.get("type"), str) else []
+    for name in ("tool", "key", "document"):
+        value = item.get(name)
+        if isinstance(value, str) and value:
+            parts.append(f"{name} {value[:60]!r}")
+    return f" ({', '.join(parts)})" if parts else ""
 
 
 def parse_action(item: Any) -> Action:
@@ -213,6 +322,8 @@ def parse_action(item: Any) -> Action:
         value = item.get("confidence")
         if value is None:
             return None
+        if isinstance(value, str) and (number := _fraction(value)) is not None:
+            value = number  # "0.9" and "90%" are common slips; accept what is unambiguous
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
             errors.append("'confidence' must be a number between 0 and 1")
             return None
@@ -261,6 +372,9 @@ def parse_action(item: Any) -> Action:
             confidence=confidence_field(),
         )
     else:
+        text = item.get("text")
+        if isinstance(text, (int, float)) and not isinstance(text, bool) and math.isfinite(text):
+            item = {**item, "text": str(text)}  # a bare number is a fine answer text
         action = Answer(text=text_field("text"), follows_from=keys_field("follows_from"), confidence=confidence_field())
     if errors:
         raise ContractViolation(errors)

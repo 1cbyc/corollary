@@ -27,8 +27,10 @@ class TrustPolicy:
     then the per-kind default in ``sources``.
 
     Attributes:
-        sources: Base confidence per source kind (``"tool"``, ``"human"``, ...).
-        tool_levels: Confidence for the symbolic ``trust=`` levels accepted by :func:`corollary.tool`.
+        sources: Base confidence per source kind (``"tool"``, ``"human"``, ...). Kinds you leave out
+            keep their defaults, so ``TrustPolicy(sources={"tool": 0.8})`` changes only tools.
+        tool_levels: Confidence for the symbolic ``trust=`` levels accepted by :func:`corollary.tool`,
+            merged with the defaults the same way.
         overrides: Exact per-source confidence, e.g. ``{"tool:sec_filings": 0.999, "human:alice": 1.0}``.
         min_confidence: Beliefs whose effective confidence is below this are hidden from the
             model by the projector.
@@ -45,6 +47,8 @@ class TrustPolicy:
     corroboration: bool = True
 
     def __post_init__(self) -> None:
+        self.sources = {**_DEFAULT_SOURCES, **self.sources}
+        self.tool_levels = {**_DEFAULT_TOOL_LEVELS, **self.tool_levels}
         for table in (self.sources, self.tool_levels, self.overrides):
             for name, value in table.items():
                 if not 0.0 <= value <= 1.0:
@@ -56,6 +60,10 @@ class TrustPolicy:
         if exact in self.overrides:
             return self.overrides[exact]
         return self.sources.get(src.kind.value, 0.5)
+
+    def fingerprint(self) -> tuple[object, ...]:
+        """The settings confidence depends on, so caches notice when the policy is edited in place."""
+        return (tuple(self.sources.items()), tuple(self.overrides.items()), self.corroboration)
 
     def tool_confidence(self, trust: str | float) -> float:
         """Resolve a tool's ``trust`` setting (a level name or a number) to a confidence."""

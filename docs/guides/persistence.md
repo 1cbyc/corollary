@@ -36,13 +36,17 @@ Labels (`IN` / `OUT`) are **not** stored: they are recomputed on load from the g
 contain an inconsistent labeling. Loading a snapshot doesn't count as a change, so `kb.changes()` is
 empty right after `load`.
 
+`save` writes atomically: the snapshot goes to a temporary file that then replaces the old one, so a crash
+mid-write never leaves a truncated file. A snapshot that is damaged or hand-edited into an invalid shape
+raises `ValueError("corrupt Corollary snapshot: ...")` on load.
+
 ## What is not saved
 
 - **Rules and constraints**, which are Python callables. Rules are referenced by name. Pass the same
   rules to `load(..., rules=[...])` and constraints to `constraints=[...]`. If a rule is missing, the
   beliefs it derived still load correctly, but they can't be re-derived automatically
   (`propagate()` reports them as pending with `rule ... is not registered`), and the verifier can't
-  replay them (a warning).
+  replay them (a warning). `load` itself warns (`UserWarning`) and names the missing rules.
 - **The trust policy and clock**: pass `trust=` and `clock=` to `load` if you don't want the defaults.
 
 Give rules explicit, stable names (`@rule(name="growth")`) for anything you persist. Anonymous lambdas get

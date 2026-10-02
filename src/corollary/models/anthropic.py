@@ -21,8 +21,8 @@ class AnthropicModel:
             Off by default; the runtime validates every response either way.
         fallbacks: Server-side refusal fallback mode, sent with the
             ``server-side-fallback-2026-07-01`` beta. ``"default"`` lets the API route a declined
-            request to a fallback model. Available on the Claude API; set ``None`` on platforms
-            that don't support it (Bedrock, Vertex AI, Foundry).
+            request to a fallback model. Available on the Claude API only, so it is left out
+            automatically when ``client`` is a Bedrock, Vertex AI or Foundry client.
         client: A pre-configured ``anthropic.Anthropic`` client (or a platform client such as
             ``AnthropicBedrockMantle``). Created from the environment when omitted.
     """
@@ -61,6 +61,15 @@ class AnthropicModel:
             self._client = anthropic.Anthropic()
         return self._client
 
+    @property
+    def _platform_client(self) -> bool:
+        """Whether the client is a cloud platform's (AnthropicBedrock, AnthropicVertex,
+        AnthropicFoundry, ...), where server-side fallbacks are not available."""
+        if self._client is None:
+            return False
+        names = [cls.__name__ for cls in type(self._client).__mro__]  # subclasses and wrappers count too
+        return any(platform in name for name in names for platform in ("Bedrock", "Vertex", "Foundry"))
+
     def request(self, system: str, prompt: str) -> dict[str, Any]:
         """The keyword arguments sent to ``messages.create`` (exposed for inspection and tests)."""
         kwargs: dict[str, Any] = {
@@ -76,7 +85,7 @@ class AnthropicModel:
             output_config["format"] = {"type": "json_schema", "schema": CONTRACT_SCHEMA}
         if output_config:
             kwargs["output_config"] = output_config
-        if self.fallbacks:
+        if self.fallbacks and not self._platform_client:
             kwargs["betas"] = [self.FALLBACK_BETA]
             kwargs["fallbacks"] = self.fallbacks
         return kwargs

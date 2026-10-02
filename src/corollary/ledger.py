@@ -25,6 +25,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ._io import write_atomically
 from .belief import Source, utcnow
 
 _FORMAT = "corollary.trustledger"
@@ -92,7 +93,7 @@ class TrustLedger:
         self.memory_half_life = memory_half_life
         self.max_history = max_history
         self._outcomes: dict[str, list[Outcome]] = {}
-        self._cache: dict[tuple[str, datetime | None], tuple[float, float]] = {}
+        self._cache: dict[str, tuple[datetime | None, tuple[float, float]]] = {}
         self.version = 0
         """Incremented on every change, so callers can invalidate derived caches."""
 
@@ -127,10 +128,13 @@ class TrustLedger:
         history = self._outcomes.get(sid)
         if not history:
             return 0.0, 0.0
-        key = (sid, at if self.memory_half_life is not None else None)
-        cached = self._cache.get(key)
-        if cached is not None:
-            return cached
+        # Without memory decay the result doesn't depend on time. With it, only the latest query
+        # time is cached per source, so the cache can't grow with every distinct ``at``, and an
+        # ``at=None`` query (meaning "now") is never served a stale value.
+        when = None if self.memory_half_life is None else at
+        cached = self._cache.get(sid)
+        if cached is not None and cached[0] == when and (when is not None or self.memory_half_life is None):
+            return cached[1]
         now = at or utcnow()
         correct = total = 0.0
         for outcome in history:
@@ -138,7 +142,7 @@ class TrustLedger:
             total += weight
             if outcome.correct:
                 correct += weight
-        self._cache[key] = (correct, total)
+        self._cache[sid] = (when, (correct, total))
         return correct, total
 
     def _weight(self, outcome: Outcome, now: datetime) -> float:
@@ -214,7 +218,8 @@ class TrustLedger:
         return ledger
 
     def save(self, path: str | os.PathLike[str]) -> None:
-        Path(path).write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        """Write the ledger as JSON, atomically."""
+        write_atomically(path, json.dumps(self.to_dict(), indent=2))
 
     @classmethod
     def load(cls, path: str | os.PathLike[str]) -> TrustLedger:

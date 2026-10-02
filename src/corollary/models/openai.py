@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..errors import ModelError
+from ..errors import ModelError, ModelRefusalError
 
 
 class OpenAIModel:
@@ -49,7 +49,7 @@ class OpenAIModel:
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
             **self.options,
         }
-        if self.json_mode:
+        if self.json_mode and "response_format" not in self.options:  # an explicit format wins
             kwargs["response_format"] = {"type": "json_object"}
         return kwargs
 
@@ -59,8 +59,16 @@ class OpenAIModel:
             response = self.client.chat.completions.create(**kwargs)
         except Exception as exc:
             raise ModelError(f"chat completion failed: {exc}") from exc
-        choice = response.choices[0]
-        if getattr(choice, "finish_reason", None) == "length":
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            raise ModelError("the completion contained no choices")
+        choice = choices[0]
+        finish = getattr(choice, "finish_reason", None)
+        refusal = getattr(choice.message, "refusal", None)
+        refusal = refusal if isinstance(refusal, str) else None  # mocks answer every attribute
+        if refusal or finish == "content_filter":
+            raise ModelRefusalError(f"{self.model} declined the request" + (f": {refusal}" if refusal else ""))
+        if finish == "length":
             raise ModelError("response truncated by the token limit")
         text = choice.message.content
         if not text:

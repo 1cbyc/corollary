@@ -6,6 +6,56 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `Agent(instructions=...)` and `run(task, instructions=...)` for domain guidance, without replacing the
+  contract's system prompt.
+- `Report.error`: a model failure (refusal, truncation, API error) ends the run and is reported there,
+  instead of raising and losing the run's steps.
+- `async def` tools, and type checking with unambiguous coercion of tool arguments (`"3"` for an `int`).
+- Logging to the `corollary` logger: model failures, tool exceptions with their traceback, failed
+  re-verifications, and each step at `DEBUG`.
+- `Propagation.settled`, `ProofDiff.status_changed`, and `register_rule(..., replace=True)`.
+
+### Changed
+
+- Citation and provenance checks match a number at the scale its unit states: "$4 million" no longer
+  matches 4.3e9, and "4 percent" no longer matches 4.1e9. A value stored in a smaller unit still matches
+  (4300, in millions, for "$4.3 billion"), and a bare number may still be any magnitude or a percentage.
+- String and boolean values in citations must appear as a whole word or phrase ("false" is not in
+  "falsehood"); a numeric string is matched as a number.
+- The provenance check no longer counts a model claim's own value as support (unless a formula computed
+  it), and ignores dates, times and ordinals.
+- `TrustPolicy(sources=...)` and `tool_levels=` are merged with the defaults instead of replacing them.
+- `resolve(conflict, keep="k")` asks for a ref when the key is on several sides of the conflict.
+- Integers compare exactly; NaN equals NaN; lists, tuples and dicts compare element by element.
+- `derive()` and `justify()` refuse inputs whose evidence has expired.
+- A source re-asserting a value it already gave replaces its justification instead of adding one, and is
+  not counted as a confirmation.
+- `BeliefBase.save()` and `TrustLedger.save()` write atomically. Loading a damaged snapshot raises
+  `ValueError`; loading one that uses unregistered rules warns.
+- `AnthropicModel` leaves out server-side fallbacks for Bedrock, Vertex AI and Foundry clients.
+
+### Fixed
+
+- A tool call or citation could take the reserved answer key.
+- A re-derivation whose response failed to parse gave up instead of retrying.
+- JSON extraction picked the first JSON value in a response, even a stray list before the actions.
+- Formulas could crash the agent (`OverflowError`, `RecursionError`) or hang on chained powers; every
+  intermediate is now a finite float.
+- A failed assertion (for example a naive `valid_until`) left a half-built node that broke save and load.
+- `supersede=True` did nothing when the value already existed; a lone string passed as a key list was
+  split into characters; retracting a retracted ref penalized its source again; a resolver naming
+  unknown refs crashed with `KeyError`.
+- Confidence ignored in-place trust policy edits and a forgetting ledger's decay, and took quadratic time
+  on long chains. Re-derivation ordering was O(n * depth).
+- `Proof.render()` hit the recursion limit on deep proofs; DOT and Mermaid exports mis-escaped quotes and
+  backslashes; `Proof.from_dict()` accepted any format.
+- `verify(at=...)` crashed on a naive datetime.
+- `OpenAIModel` missed refusals, crashed on an empty `choices` list, and overrode an explicit
+  `response_format`.
+- `run(max_steps=0)` used the default budget; a generator `scope` dropped conflicts from the context.
+
 ## [0.1.0a1] - 2026-10-02
 
 First public pre-release.

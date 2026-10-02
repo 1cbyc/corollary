@@ -41,7 +41,7 @@ FUNCTIONS: dict[str, Callable[..., Any]] = {
     "abs": abs,
     "min": min,
     "max": max,
-    "round": round,
+    "round": lambda x, ndigits=0: round(x, _whole(ndigits)),
     "sqrt": math.sqrt,
     "log": math.log,
     "exp": math.exp,
@@ -49,6 +49,8 @@ FUNCTIONS: dict[str, Callable[..., Any]] = {
 
 _MAX_EXPONENT = 64
 _MAX_LENGTH = 2_000
+_MAX_DEPTH = 100
+_INTERNAL_NAME = re.compile(r"(?<!\w)_v\d+(?!\w)")
 
 
 def formula_keys(formula: str) -> list[str]:
@@ -62,11 +64,16 @@ def formula_keys(formula: str) -> list[str]:
 def evaluate(formula: str, values: Mapping[str, Any]) -> float:
     """Evaluate ``formula`` substituting ``values[key]`` for each ``{key}`` placeholder.
 
+    Every number is a float, so results stay bounded: an intermediate that overflows, is not a
+    finite real number, or nests deeper than the limit is an error, never a hang or a crash.
+
     Raises :class:`FormulaError` if the formula is invalid, references a key missing from
-    ``values``, uses a non-numeric value, or uses a forbidden construct.
+    ``values``, uses a non-numeric or non-finite value, or uses a forbidden construct.
     """
     if len(formula) > _MAX_LENGTH:
         raise FormulaError(f"formula is longer than {_MAX_LENGTH} characters")
+    if match := _INTERNAL_NAME.search(_PLACEHOLDER.sub("", formula)):
+        raise FormulaError(f"unknown name {match.group(0)!r}; reference beliefs as {{key}}")
     names: dict[str, float] = {}
 
     def substitute(match: re.Match[str]) -> str:
@@ -76,8 +83,14 @@ def evaluate(formula: str, values: Mapping[str, Any]) -> float:
         value = values[key]
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise FormulaError(f"{{{key}}} has non-numeric value {value!r}")
+        try:
+            number = float(value)
+        except OverflowError:
+            raise FormulaError(f"{{{key}}} is too large: {value!r}") from None
+        if not math.isfinite(number):
+            raise FormulaError(f"{{{key}}} is not a finite number: {value!r}")
         name = f"_v{len(names)}"
-        names[name] = float(value)
+        names[name] = number
         return name
 
     expression = _PLACEHOLDER.sub(substitute, formula)
@@ -85,36 +98,65 @@ def evaluate(formula: str, values: Mapping[str, Any]) -> float:
         tree = ast.parse(expression, mode="eval")
     except SyntaxError as exc:
         raise FormulaError(f"invalid formula {formula!r}: {exc.msg}") from None
+    except (ValueError, RecursionError, MemoryError) as exc:
+        raise FormulaError(f"invalid formula {formula!r}: {exc}") from None
     try:
-        result = _eval(tree.body, names)
+        return _eval(tree.body, names, 0)
     except FormulaError:
         raise
-    except (ArithmeticError, ValueError, TypeError) as exc:
-        raise FormulaError(f"cannot evaluate {formula!r}: {exc}") from None
-    if isinstance(result, complex) or not isinstance(result, (int, float)):
-        raise FormulaError(f"formula {formula!r} did not produce a real number")
-    return float(result)
+    except (ArithmeticError, ValueError, TypeError, RecursionError, MemoryError) as exc:
+        raise FormulaError(f"cannot evaluate {formula!r}: {exc or type(exc).__name__}") from None
 
 
-def _eval(node: ast.AST, names: Mapping[str, float]) -> Any:
+def _whole(number: float) -> int:
+    """Numbers arrive as floats; an argument that must be an integer, like round()'s digits, must
+    still be a whole number."""
+    if not float(number).is_integer():
+        raise ValueError(f"expected a whole number, got {number}")
+    return int(number)
+
+
+def _real(value: Any) -> float:
+    """Coerce an intermediate result to a finite float, or fail."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise FormulaError("the formula did not produce a real number")
+    number = float(value)  # an int too large for a float raises OverflowError
+    if not math.isfinite(number):
+        raise FormulaError("the formula produced a value that is not a finite number")
+    return number
+
+
+def _eval(node: ast.AST, names: Mapping[str, float], depth: int) -> float:
+    if depth > _MAX_DEPTH:
+        raise FormulaError(f"formula nests deeper than {_MAX_DEPTH} levels")
+    depth += 1
     if isinstance(node, ast.Constant):
         if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
             raise FormulaError(f"only numeric literals are allowed, got {node.value!r}")
-        return node.value
+        return _real(node.value)
     if isinstance(node, ast.Name):
         if node.id in names:
             return names[node.id]
         raise FormulaError(f"unknown name {node.id!r}; reference beliefs as {{key}}")
     if isinstance(node, ast.BinOp) and type(node.op) in _BINARY:
-        left, right = _eval(node.left, names), _eval(node.right, names)
-        if isinstance(node.op, ast.Pow) and abs(right) > _MAX_EXPONENT:
-            raise FormulaError(f"exponent {right} exceeds the limit of {_MAX_EXPONENT}")
-        return _BINARY[type(node.op)](left, right)
+        # Python parses "a + b + c + ..." as a left-leaning chain. Walk it iteratively, so a long
+        # flat sum doesn't count as deep nesting; only the right operands recurse.
+        chain: list[ast.BinOp] = []
+        while isinstance(node, ast.BinOp) and type(node.op) in _BINARY:
+            chain.append(node)
+            node = node.left
+        value = _eval(node, names, depth)
+        for link in reversed(chain):
+            right = _eval(link.right, names, depth)
+            if isinstance(link.op, ast.Pow) and abs(right) > _MAX_EXPONENT:
+                raise FormulaError(f"exponent {right} exceeds the limit of {_MAX_EXPONENT}")
+            value = _real(_BINARY[type(link.op)](value, right))
+        return value
     if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY:
-        return _UNARY[type(node.op)](_eval(node.operand, names))
+        return _real(_UNARY[type(node.op)](_eval(node.operand, names, depth)))
     if isinstance(node, ast.Call):
         if not isinstance(node.func, ast.Name) or node.func.id not in FUNCTIONS or node.keywords:
             allowed = ", ".join(sorted(FUNCTIONS))
             raise FormulaError(f"only these functions are allowed, with positional arguments: {allowed}")
-        return FUNCTIONS[node.func.id](*(_eval(arg, names) for arg in node.args))
+        return _real(FUNCTIONS[node.func.id](*(_eval(arg, names, depth) for arg in node.args)))
     raise FormulaError(f"unsupported syntax in formula: {type(node).__name__}")
