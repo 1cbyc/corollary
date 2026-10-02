@@ -220,12 +220,10 @@ Corollary is not a memory plugin and not a prompting strategy. The belief base *
 
 Corollary requires Python 3.10+. The core has **no runtime dependencies**; model SDKs are optional extras.
 
-Corollary is not on PyPI yet. Until the first release, install it from GitHub:
-
 ```bash
-pip install "corollary @ git+https://github.com/gabe-santana/corollary"
-pip install "corollary[anthropic] @ git+https://github.com/gabe-santana/corollary"   # + Claude adapter
-pip install "corollary[openai] @ git+https://github.com/gabe-santana/corollary"      # + OpenAI-compatible adapter
+pip install corollary                 # the kernel and the agent runtime
+pip install "corollary[anthropic]"    # + the Claude adapter (official Anthropic SDK)
+pip install "corollary[openai]"       # + the OpenAI-compatible adapter
 ```
 
 To develop:

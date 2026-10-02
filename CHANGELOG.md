@@ -6,34 +6,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Added
-
-- **Learned reliability.** `TrustLedger` records when sources turn out right or wrong and re-estimates
-  their reliability from the trust policy's prior, optionally forgetting old outcomes
-  (`memory_half_life`). Ledgers can be shared across belief bases and are saved with a base that owns one.
-- **Outcomes.** `retract(..., fault="source")`, `resolve(..., learn=True)`, `AskHuman` decisions,
-  independent confirmations, `record_outcome()`, and the agent's verified formulas and citations
-  (`learn_from_checks`) all feed the ledger.
-- **Corroboration.** Agreeing premises from independent origins combine by noisy-OR. Sources declare a
-  shared origin with `origin=` (on `assert_`, `Source` and `@tool`); `TrustPolicy(corroboration=False)`
-  turns it off.
-- **Evidence decay.** `half_life=` on `assert_` and `@tool` fades confidence without changing status.
-  `faded()` lists faded premises, and `Agent.reverify()` now refreshes them too.
-- **Self-consistency.** `Agent(self_consistency=k)` samples unverified claims `k` times and uses the
-  agreement rate as the step's certainty.
-- A confidence guide in the documentation.
-
-### Changed
-
-- Confidence is now computed over all valid justifications (the strongest wins) instead of the current
-  support only, and is cached.
-- For model claims, `Justification.confidence` now holds the step's certainty; the model's (learned)
-  reliability is applied when confidence is computed. Snapshots move to format version 2, and version 1
-  snapshots are migrated on load.
-- Re-derivation and ablation prompts no longer show the claim text when deriving from scratch, so the
-  model can't copy its earlier conclusion.
-
-## [0.1.0a1] - 2026-10-01
+## [0.1.0a1] - 2026-10-02
 
 First public pre-release.
 
@@ -60,7 +33,21 @@ First public pre-release.
   policies, `repair()`, `reverify()` and ablation-based `narrow()`.
 - **Models.** `AnthropicModel` (Claude, via the official SDK), `OpenAIModel` (any Chat Completions
   endpoint), `CallableModel` and `ScriptedModel`.
-- **Persistence.** JSON snapshots with `save()` / `load()`.
+- **Learned reliability.** `TrustLedger` records when sources turn out right or wrong and re-estimates
+  their reliability from the trust policy's prior, optionally forgetting old outcomes
+  (`memory_half_life`). Ledgers can be shared across belief bases and are saved with a base that owns one.
+- **Outcomes.** `retract(..., fault="source")`, `resolve(..., learn=True)`, `AskHuman` decisions,
+  independent confirmations, `record_outcome()`, and the agent's verified formulas and citations
+  (`learn_from_checks`) all feed the ledger.
+- **Corroboration.** Agreeing premises from independent origins combine by noisy-OR. Sources declare a
+  shared origin with `origin=` (on `assert_`, `Source` and `@tool`); `TrustPolicy(corroboration=False)`
+  turns it off.
+- **Evidence decay.** `half_life=` on `assert_` and `@tool` fades confidence without changing status.
+  `faded()` lists faded premises, and `Agent.reverify()` now refreshes them too.
+- **Self-consistency.** `Agent(self_consistency=k)` samples unverified claims `k` times and uses the
+  agreement rate as the step's certainty.
+- A confidence guide in the documentation.
+- **Persistence.** JSON snapshots with `save()` / `load()`, including the trust ledger.
 - Examples: a 20-conclusion self-repairing report, an offline agent, and a Claude agent.
 
 [Unreleased]: https://github.com/gabe-santana/corollary/compare/v0.1.0a1...HEAD
