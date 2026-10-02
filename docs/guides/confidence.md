@@ -226,7 +226,9 @@ kb.assert_("x", 1, source="human:alice", origin="finance_team")
 ```
 
 By default a source's origin is its own name (`tool:get_revenue`), so repeated calls to the same tool
-never reinforce themselves. Agreement within an origin is not recorded as a confirmation either.
+never reinforce themselves. Agreement within an origin is not recorded as a confirmation either, and a
+source repeating a value it already gave (a re-read, a refresh) replaces its earlier justification
+instead of adding one, so polling a tool doesn't inflate its track record.
 
 To turn agreement off entirely, use `TrustPolicy(corroboration=False)`: each belief then counts only its
 most confident source.

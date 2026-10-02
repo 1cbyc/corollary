@@ -323,3 +323,12 @@ def test_confidence_of_a_long_chain_is_linear(kb: BeliefBase, monkeypatch: pytes
     monkeypatch.setattr(kb, "_node_confidence", counting)
     kb.confidence("n999")
     assert calls <= 2 * 1000
+
+
+def test_re_reading_the_same_source_is_not_new_evidence(kb: BeliefBase) -> None:
+    for _ in range(100):
+        kb.assert_("x", 1, source="tool:a")
+        kb.assert_("x", 1, source="tool:b")
+    assert len(kb.justifications("x")) == 2
+    assert kb.ledger.record_of("tool:a").correct == 1  # confirmed once, by tool:b's first reading
+    assert kb.ledger.record_of("tool:b").correct == 1

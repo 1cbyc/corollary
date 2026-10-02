@@ -247,12 +247,17 @@ class BeliefBase:
             old.retracted, old.retract_reason = True, f"superseded by {target.ref}"
             self._hints[old.ref] = old.retract_reason
         renewing = not created and target.status is Status.OUT
+        # The same source saying the same thing again (a re-read, a refresh) replaces its earlier
+        # justification: it is not new evidence, and it must not pile up or count as confirmation.
+        repeated = [] if created else [j for j in target.justifications if j.is_premise and j.source == src]
         if created:
             self._hints[target.ref] = f"asserted by {src}"
         else:
-            if not renewing:
+            if not renewing and not repeated:
                 self._credit_confirmation(target, src)
-            self._hints[target.ref] = f"renewed by {src}" if renewing else f"corroborated by {src}"
+            self._hints[target.ref] = f"renewed by {src}" if renewing or repeated else f"corroborated by {src}"
+        for j in repeated:
+            self._unlink(target, j)
         try:
             self._add_justification(
                 target,
@@ -265,9 +270,11 @@ class BeliefBase:
                 created=created,
             )
         except BaseException:
+            for j in repeated:
+                self._link(target, j)
             for old in superseded:
                 old.retracted, old.retract_reason = False, ""
-            self._relabel([n.ref for n in superseded])
+            self._relabel([target.ref, *(n.ref for n in superseded)] if repeated else [n.ref for n in superseded])
             raise
         for old in superseded:
             self._log("retract", old.ref, old.retract_reason)
