@@ -537,3 +537,24 @@ def test_rules_can_be_replaced_and_same_named_functions_coexist(kb: BeliefBase) 
     assert kb.derive("double", make(2), "x").value == 20
     assert kb.derive("triple", make(3), "x").value == 30
     assert {"scale", "scale:2"} <= set(kb.rules)
+
+
+def test_auto_named_rules_never_reuse_a_name_a_snapshot_still_uses(kb: BeliefBase) -> None:
+    from corollary import Rule
+
+    def make(factor: float):  # type: ignore[no-untyped-def]
+        def scale(x: float) -> float:
+            return x * factor
+
+        return scale
+
+    kb.assert_("x", 1, source="tool:a")
+    kb.derive("a", make(1), "x")
+    kb.derive("b", make(2), "x")  # rule "scale:2"
+    with pytest.warns(UserWarning, match="scale:2"):
+        loaded = BeliefBase.from_dict(kb.to_dict(), rules=[Rule("scale", make(1))])
+    loaded.derive("c", make(10), "x")
+    assert loaded.support("c").rule not in {"scale", "scale:2"}  # type: ignore[union-attr]
+    loaded.register_rule(Rule("scale:4", make(4)))
+    loaded.derive("d", make(5), "x")  # skips the explicitly registered name too
+    assert loaded.value("d") == 5

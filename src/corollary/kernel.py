@@ -1423,12 +1423,16 @@ class BeliefBase:
                 if existing.fn is r:
                     return existing
             name = getattr(r, "__name__", "rule")
-            if name == "<lambda>" or name in self._rules:
+            taken = set(self._rules) | {j.rule for j in self._justifications.values() if j.rule}
+            if name == "<lambda>" or name in taken:
                 # Anonymous functions, and different functions sharing a name (closures made by one
-                # factory), get a unique name. Use named rules if the base will be persisted, since
-                # only names survive save()/load().
-                stem, first = ("lambda", 1) if name == "<lambda>" else (name, 2)  # the first one is plain `name`
-                name = f"{stem}:{sum(1 for n in self._rules if n.startswith(f'{stem}:')) + first}"
+                # factory), get a unique name: one no rule and no existing belief uses, so a loaded
+                # snapshot's beliefs never get re-linked to the wrong function. Use named rules if the
+                # base will be persisted, since only names survive save()/load().
+                stem, n = ("lambda", 1) if name == "<lambda>" else (name, 2)  # the first one is plain `name`
+                while f"{stem}:{n}" in taken:
+                    n += 1
+                name = f"{stem}:{n}"
             return self.register_rule(Rule(name=name, fn=r))
         raise TypeError(f"expected a Rule, a callable or a rule name, got {type(r).__name__}")
 
