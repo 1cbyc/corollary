@@ -33,7 +33,8 @@ report = agent.run("Compare Q2 and Q3 revenue and assess the growth trend.")
 | `repair_attempts` | `2` | Model calls per belief during `repair()` |
 | `self_consistency` | `1` | Samples per unverified claim; see [self-consistency](confidence.md#6-self-consistency-asking-more-than-once) |
 | `learn_from_checks` | `True` | Record verified formulas and citations in the trust ledger as the model's track record |
-| `system_prompt` | `SYSTEM_PROMPT` | The contract instructions; override with care |
+| `instructions` | `""` | Domain guidance shown on every step and every re-derivation (house style, language, ...) |
+| `system_prompt` | `SYSTEM_PROMPT` | The contract instructions; override with care. Prefer `instructions` for guidance |
 
 ## The run loop
 

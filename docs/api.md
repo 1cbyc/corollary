@@ -210,11 +210,11 @@ Properties: `ref`, `antecedents`, `is_premise`.
 
 ## Agents
 
-### `Agent(model, beliefs=None, tools=(), *, documents=None, rules=(), trust=None, projector=None, dependencies="conservative", resolver=None, max_steps=12, repair_attempts=2, self_consistency=1, learn_from_checks=True, system_prompt=SYSTEM_PROMPT)`
+### `Agent(model, beliefs=None, tools=(), *, documents=None, rules=(), trust=None, projector=None, dependencies="conservative", resolver=None, max_steps=12, repair_attempts=2, self_consistency=1, learn_from_checks=True, instructions="", system_prompt=SYSTEM_PROMPT)`
 
 | Method / attribute | Description |
 |---|---|
-| `run(task, *, max_steps=None) -> Report` | Work on a task until answered or out of steps. |
+| `run(task, *, max_steps=None, instructions="") -> Report` | Work on a task until answered or out of steps; `report.error` holds a model failure. |
 | `repair(*, include_kept=False) -> Propagation` | Re-derive everything that lost support. |
 | `reverify(*, include_kept=False) -> Propagation` | Re-run expired or faded tool calls, then repair. |
 | `narrow(key) -> NarrowResult` | Prune unnecessary dependencies by ablation. |

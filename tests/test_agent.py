@@ -569,3 +569,14 @@ def test_step_budget_must_be_positive() -> None:
     agent, _ = make_agent(FETCH)
     with pytest.raises(ValueError, match="max_steps"):
         agent.run("t", max_steps=0)
+
+
+def test_instructions_reach_every_prompt() -> None:
+    agent, model = make_agent(FETCH, ANALYZE, instructions="Answer in Portuguese.")
+    agent.run("t", instructions="Be brief.")
+    assert "# Instructions\nAnswer in Portuguese.\n\nBe brief." in model.calls[0].prompt
+    correct_q2(agent)
+    model.add(actions(claim("growth:Q3_vs_Q2", None, ["revenue:Q2", "revenue:Q3"], formula=GROWTH)), actions())
+    agent.repair()
+    assert "Answer in Portuguese." in model.calls[2].prompt  # re-derivations follow them too
+    assert "Be brief." not in model.calls[2].prompt  # run instructions were for that run only

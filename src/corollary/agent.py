@@ -154,6 +154,9 @@ class Agent:
             sample is one model call.
         learn_from_checks: Record the model's verified work (formulas and citations that check
             out, or don't) in the trust ledger, so its reliability is measured rather than assumed.
+        instructions: Domain guidance shown to the model on every step, under the task (house
+            style, what to answer in which language, ...). The claim contract stays in force.
+        system_prompt: The contract the model is held to. Replace it only to adapt the wording.
     """
 
     def __init__(
@@ -172,6 +175,7 @@ class Agent:
         repair_attempts: int = 2,
         self_consistency: int = 1,
         learn_from_checks: bool = True,
+        instructions: str = "",
         system_prompt: str = SYSTEM_PROMPT,
     ) -> None:
         if self_consistency < 1:
@@ -197,6 +201,7 @@ class Agent:
         self.repair_attempts = repair_attempts
         self.self_consistency = self_consistency
         self.learn_from_checks = learn_from_checks
+        self.instructions = instructions
         self.system_prompt = system_prompt
 
     @property
@@ -207,8 +212,12 @@ class Agent:
     # Running a task
     # ======================================================================================
 
-    def run(self, task: str, *, max_steps: int | None = None) -> Report:
-        """Work on ``task`` until the model answers or the step budget runs out."""
+    def run(self, task: str, *, max_steps: int | None = None, instructions: str = "") -> Report:
+        """Work on ``task`` until the model answers or the step budget runs out.
+
+        ``instructions`` are added to the agent's own for this run only.
+        """
+        guidance = "\n\n".join(part.strip() for part in (self.instructions, instructions) if part.strip())
         key = self._answer_key()
         steps: list[StepRecord] = []
         feedback: list[str] = []
@@ -219,7 +228,9 @@ class Agent:
             self.kb.refresh()
             if self.resolver is not None:
                 self.kb.resolve_conflicts(self.resolver)
-            projection = self.projector.project(self.kb, task=task, tools=list(self.tools.values()), feedback=feedback)
+            projection = self.projector.project(
+                self.kb, task=task, tools=list(self.tools.values()), feedback=feedback, instructions=guidance
+            )
             try:
                 response = self.model.complete(self.system_prompt, projection.text)
             except ModelError as exc:
@@ -571,7 +582,12 @@ class Agent:
         feedback: list[str] = []
         for _ in range(max(1, self.repair_attempts)):
             projection = self.projector.project(
-                self.kb, task=task, scope=scope, feedback=feedback, include_documents=False
+                self.kb,
+                task=task,
+                scope=scope,
+                feedback=feedback,
+                instructions=self.instructions,
+                include_documents=False,
             )
             try:
                 response = self.model.complete(self.system_prompt, projection.text)
