@@ -140,3 +140,17 @@ def _ctx(kb: BeliefBase):  # type: ignore[no-untyped-def]
     from corollary.verify import VerificationContext
 
     return VerificationContext(at=kb.now(), kb=kb, documents=kb.documents, rules=kb.rules)
+
+
+def test_numeric_provenance_accepts_identifiers_and_names(kb: BeliefBase) -> None:
+    kb.assert_("order:1043:item", "Coffee grinder 4000", source="tool:oms")
+    kb.assert_("order:1043:days_left", 13, source="tool:oms")
+    kb.justify(
+        "answer",
+        "ok",
+        antecedents=["order:1043:item", "order:1043:days_left"],
+        source="model:m",
+        claim="Your Coffee grinder 4000 (order 1043) has 13 days left, not 2500.",
+    )
+    report = kb.proof("answer").verify(kb, checks=[NumericProvenanceCheck()])
+    assert [w.message for w in report.warnings] == ["states 2500, which does not follow from its antecedents"]

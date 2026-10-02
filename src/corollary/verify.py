@@ -329,7 +329,14 @@ class NumericProvenanceCheck:
             for value in [step.belief.value, *(s.belief.value for s in antecedents)]:
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     candidates.append(float(value))
-            context_numbers = [n for s in antecedents for n, _ in numbers_in(s.belief.claim)]
+            # Numbers also count as supported when they appear in an antecedent's claim, key or text
+            # value: identifiers ("order:1043:status") and names ("iPhone 15") aren't figures.
+            context_text = [step.belief.key]
+            for s in antecedents:
+                context_text += [s.belief.claim, s.belief.key]
+                if isinstance(s.belief.value, str):
+                    context_text.append(s.belief.value)
+            context_numbers = [n for text_part in context_text for n, _ in numbers_in(text_part)]
             for number, decimals in numbers_in(str(text)):
                 if self._ignored(number, decimals):
                     continue
