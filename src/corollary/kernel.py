@@ -239,11 +239,21 @@ class BeliefBase:
             raise ValueError(f"valid_until must be {kind}, like the belief base's clock")
 
         target = self._matching_node(key, value, allow_expired=True)
-        if target is not None:
-            renewing = target.status is Status.OUT
+        created = target is None
+        if target is None:
+            target = self._new_node(key, value, source=src, claim=claim, confidence=conf, metadata=metadata)
+        superseded = [n for n in self._in_nodes(key) if n is not target] if supersede else []
+        for old in superseded:
+            old.retracted, old.retract_reason = True, f"superseded by {target.ref}"
+            self._hints[old.ref] = old.retract_reason
+        renewing = not created and target.status is Status.OUT
+        if created:
+            self._hints[target.ref] = f"asserted by {src}"
+        else:
             if not renewing:
                 self._credit_confirmation(target, src)
             self._hints[target.ref] = f"renewed by {src}" if renewing else f"corroborated by {src}"
+        try:
             self._add_justification(
                 target,
                 kind=JustificationKind.PREMISE,
@@ -251,35 +261,21 @@ class BeliefBase:
                 confidence=conf,
                 valid_until=until,
                 half_life=half_life,
-            )
-            self._log("renew" if renewing else "support", target.ref, f"by {src}")
-            return target.belief
-
-        superseded = self._in_nodes(key) if supersede else []
-        node = self._new_node(key, value, source=src, claim=claim, confidence=conf, metadata=metadata)
-        for old in superseded:
-            old.retracted, old.retract_reason = True, f"superseded by {node.ref}"
-            self._hints[old.ref] = f"superseded by {node.ref}"
-            self._log("retract", old.ref, old.retract_reason)
-        self._hints[node.ref] = f"asserted by {src}"
-        try:
-            self._add_justification(
-                node,
-                kind=JustificationKind.PREMISE,
-                source=src,
-                confidence=conf,
-                valid_until=until,
-                half_life=half_life,
                 extra_seeds=[n.ref for n in superseded],
-                created=True,
+                created=created,
             )
         except BaseException:
             for old in superseded:
                 old.retracted, old.retract_reason = False, ""
             self._relabel([n.ref for n in superseded])
             raise
-        self._log("assert", node.ref, f"= {format_value(value)} by {src}")
-        return node.belief
+        for old in superseded:
+            self._log("retract", old.ref, old.retract_reason)
+        if created:
+            self._log("assert", target.ref, f"= {format_value(value)} by {src}")
+        else:
+            self._log("renew" if renewing else "support", target.ref, f"by {src}")
+        return target.belief
 
     def assume(self, key: str, value: Any, *, by: str = "user", **kwargs: Any) -> Belief:
         """Assert a working hypothesis. Assumptions are premises the verifier flags as ungrounded."""

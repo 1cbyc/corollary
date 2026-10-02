@@ -463,3 +463,13 @@ def test_a_lone_string_is_one_key_not_its_characters(kb: BeliefBase) -> None:
     assert support is not None and support.antecedents == ("price@1",) and support.inputs == ("price",)
     constraint = kb.add_constraint("positive", "price", lambda p: p > 0)
     assert constraint.keys == ("price",)
+
+
+def test_supersede_resolves_the_conflict_when_the_value_already_exists(kb: BeliefBase) -> None:
+    kb.assert_("k", 1, source="tool:a")
+    kb.assert_("k", 2, source="tool:b")
+    assert [c.id for c in kb.conflicts()] == ["value:k"]
+    belief = kb.assert_("k", 2, source="tool:c", supersede=True)
+    assert belief.ref == "k@2"
+    assert kb.conflicts() == []
+    assert kb.status("k@1") is Status.OUT and kb.value("k") == 2
