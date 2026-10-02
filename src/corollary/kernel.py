@@ -234,6 +234,9 @@ class BeliefBase:
             )
         conf = self.trust.confidence_for(src) if confidence is None else _check_confidence(confidence)
         until = valid_until if valid_until is not None else (self.now() + ttl if ttl is not None else None)
+        if until is not None and (until.tzinfo is None) != (self.now().tzinfo is None):
+            kind = "naive" if self.now().tzinfo is None else "timezone-aware"
+            raise ValueError(f"valid_until must be {kind}, like the belief base's clock")
 
         target = self._matching_node(key, value, allow_expired=True)
         if target is not None:
@@ -259,16 +262,22 @@ class BeliefBase:
             self._hints[old.ref] = f"superseded by {node.ref}"
             self._log("retract", old.ref, old.retract_reason)
         self._hints[node.ref] = f"asserted by {src}"
-        self._add_justification(
-            node,
-            kind=JustificationKind.PREMISE,
-            source=src,
-            confidence=conf,
-            valid_until=until,
-            half_life=half_life,
-            extra_seeds=[n.ref for n in superseded],
-            created=True,
-        )
+        try:
+            self._add_justification(
+                node,
+                kind=JustificationKind.PREMISE,
+                source=src,
+                confidence=conf,
+                valid_until=until,
+                half_life=half_life,
+                extra_seeds=[n.ref for n in superseded],
+                created=True,
+            )
+        except BaseException:
+            for old in superseded:
+                old.retracted, old.retract_reason = False, ""
+            self._relabel([n.ref for n in superseded])
+            raise
         self._log("assert", node.ref, f"= {format_value(value)} by {src}")
         return node.belief
 
@@ -1242,7 +1251,9 @@ class BeliefBase:
         seeds = [node.ref, *extra_seeds]
         try:
             self._relabel(seeds)
-        except CircularDefeatError:
+        except BaseException:
+            # Leave the graph as it was, whatever went wrong: a half-linked node would break
+            # every later query, and saving.
             self._unlink(node, j)
             if created:
                 self._discard_node(node)

@@ -422,3 +422,32 @@ def test_changes_buffer_is_net(kb: BeliefBase) -> None:
     kb.assert_("a", 1)
     assert [c.kind for c in kb.changes()] == [ChangeKind.IN]
     assert kb.changes() == []
+
+
+# -- robustness -------------------------------------------------------------------------------
+
+
+def test_naive_valid_until_is_rejected_before_anything_changes(kb: BeliefBase) -> None:
+    from datetime import datetime
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        kb.assert_("b", 2, source="tool:x", valid_until=datetime(2030, 1, 1))
+    assert kb.keys(status=None) == []
+
+
+def test_a_failed_assertion_leaves_the_base_unchanged(kb: BeliefBase, monkeypatch: pytest.MonkeyPatch) -> None:
+    kb.assert_("a", 1, source="tool:x")
+    before = kb.to_dict()
+    relabel = kb._relabel
+
+    def broken(seeds: list[str]) -> None:
+        monkeypatch.setattr(kb, "_relabel", relabel)  # fail once, then let the rollback relabel
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(kb, "_relabel", broken)
+    with pytest.raises(RuntimeError):
+        kb.assert_("a", 2, source="tool:y", supersede=True)
+    assert kb.status("a@1") is Status.IN
+    assert [b.ref for b in kb.revisions("a")] == ["a@1"]
+    assert BeliefBase.from_dict(kb.to_dict()).value("a") == 1
+    assert kb.to_dict()["beliefs"] == before["beliefs"]
