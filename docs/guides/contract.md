@@ -115,7 +115,9 @@ functions `abs`, `min`, `max`, `round`, `sqrt`, `log`, `exp` with positional arg
 
 Not allowed: names other than placeholders, attribute access, subscripts, strings, comprehensions, keyword
 arguments, or any other syntax. Formulas are evaluated by a restricted AST interpreter, never by `eval`,
-so an untrusted formula can't run code.
+so an untrusted formula can't run code. Every number is a float, and every intermediate result must be a
+finite real number, so a formula can't hang the process with huge powers either: overflow, `inf`, `nan`,
+complex numbers and nesting deeper than 100 levels are errors, fed back to the model like any other.
 
 A claim with a formula gets rule-level confidence, because the step was checked mechanically. The verifier
 re-executes every formula again when it checks a proof.
