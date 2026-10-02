@@ -155,3 +155,22 @@ def test_openai_empty_choices_and_explicit_response_format() -> None:
         OpenAIModel("m", client=client).complete("s", "p")
     schema = {"type": "json_schema", "json_schema": {"name": "x", "schema": {}}}
     assert OpenAIModel("m", response_format=schema).request("s", "p")["response_format"] == schema
+
+
+def test_platform_detection_follows_subclasses() -> None:
+    class AnthropicBedrock(SimpleNamespace):
+        pass
+
+    class TracedClient(AnthropicBedrock):
+        pass
+
+    assert "fallbacks" not in AnthropicModel(client=TracedClient()).request("s", "p")
+
+
+def test_mocked_openai_clients_are_not_refusals() -> None:
+    from unittest.mock import MagicMock
+
+    client = MagicMock()
+    client.chat.completions.create.return_value.choices = [MagicMock(finish_reason="stop")]
+    client.chat.completions.create.return_value.choices[0].message.content = '{"actions": []}'
+    assert OpenAIModel("m", client=client).complete("s", "p") == '{"actions": []}'

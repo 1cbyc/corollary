@@ -65,6 +65,7 @@ class OpenAIModel:
         choice = choices[0]
         finish = getattr(choice, "finish_reason", None)
         refusal = getattr(choice.message, "refusal", None)
+        refusal = refusal if isinstance(refusal, str) else None  # mocks answer every attribute
         if refusal or finish == "content_filter":
             raise ModelRefusalError(f"{self.model} declined the request" + (f": {refusal}" if refusal else ""))
         if finish == "length":

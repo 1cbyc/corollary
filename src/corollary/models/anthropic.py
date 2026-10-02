@@ -65,8 +65,10 @@ class AnthropicModel:
     def _platform_client(self) -> bool:
         """Whether the client is a cloud platform's (AnthropicBedrock, AnthropicVertex,
         AnthropicFoundry, ...), where server-side fallbacks are not available."""
-        name = type(self._client).__name__ if self._client is not None else ""
-        return any(platform in name for platform in ("Bedrock", "Vertex", "Foundry"))
+        if self._client is None:
+            return False
+        names = [cls.__name__ for cls in type(self._client).__mro__]  # subclasses and wrappers count too
+        return any(platform in name for name in names for platform in ("Bedrock", "Vertex", "Foundry"))
 
     def request(self, system: str, prompt: str) -> dict[str, Any]:
         """The keyword arguments sent to ``messages.create`` (exposed for inspection and tests)."""
