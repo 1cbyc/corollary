@@ -191,3 +191,12 @@ def test_a_blank_quote_is_a_missing_quote(kb: BeliefBase) -> None:
     kb.assert_("rev", 4.3e9, source=Source.document("doc", quote="   "))
     report = kb.proof("rev").verify(kb, checks=[CitationCheck()])
     assert [w.message for w in report.warnings] == ["cites 'doc' without a quote"]
+
+
+def test_a_naive_check_time_works_with_a_naive_clock() -> None:
+    from datetime import datetime
+
+    kb = BeliefBase(clock=lambda: datetime(2026, 1, 1))
+    kb.assert_("a", 1, source="tool:x", valid_until=datetime(2026, 6, 1))
+    report = kb.proof("a").verify(at=datetime(2027, 1, 1))  # no kb: the proof alone decides
+    assert any("expired" in r.message for r in report.errors)

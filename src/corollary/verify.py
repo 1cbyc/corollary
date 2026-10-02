@@ -374,8 +374,8 @@ class Verifier:
 
     def verify(self, proof: Proof, *, kb: BeliefBase | None = None, at: datetime | None = None) -> VerificationReport:
         """Run every check. ``at`` is the time to check validity against (default: now). A naive
-        ``at`` is taken as UTC, unless the belief base itself runs on a naive clock."""
-        if at is not None and at.tzinfo is None and (kb is None or kb.now().tzinfo is not None):
+        ``at`` is taken as UTC, unless the proof itself was recorded on a naive clock."""
+        if at is not None and at.tzinfo is None and proof.created_at.tzinfo is not None:
             at = at.replace(tzinfo=timezone.utc)
         ctx = VerificationContext(
             at=at or (kb.now() if kb is not None else utcnow()),
