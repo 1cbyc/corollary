@@ -41,7 +41,7 @@ FUNCTIONS: dict[str, Callable[..., Any]] = {
     "abs": abs,
     "min": min,
     "max": max,
-    "round": lambda x, ndigits=0: round(x, int(ndigits)),  # numbers arrive as floats
+    "round": lambda x, ndigits=0: round(x, _whole(ndigits)),
     "sqrt": math.sqrt,
     "log": math.log,
     "exp": math.exp,
@@ -108,6 +108,14 @@ def evaluate(formula: str, values: Mapping[str, Any]) -> float:
         raise FormulaError(f"cannot evaluate {formula!r}: {exc or type(exc).__name__}") from None
 
 
+def _whole(number: float) -> int:
+    """Numbers arrive as floats; an argument that must be an integer, like round()'s digits, must
+    still be a whole number."""
+    if not float(number).is_integer():
+        raise ValueError(f"expected a whole number, got {number}")
+    return int(number)
+
+
 def _real(value: Any) -> float:
     """Coerce an intermediate result to a finite float, or fail."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -131,10 +139,19 @@ def _eval(node: ast.AST, names: Mapping[str, float], depth: int) -> float:
             return names[node.id]
         raise FormulaError(f"unknown name {node.id!r}; reference beliefs as {{key}}")
     if isinstance(node, ast.BinOp) and type(node.op) in _BINARY:
-        left, right = _eval(node.left, names, depth), _eval(node.right, names, depth)
-        if isinstance(node.op, ast.Pow) and abs(right) > _MAX_EXPONENT:
-            raise FormulaError(f"exponent {right} exceeds the limit of {_MAX_EXPONENT}")
-        return _real(_BINARY[type(node.op)](left, right))
+        # Python parses "a + b + c + ..." as a left-leaning chain. Walk it iteratively, so a long
+        # flat sum doesn't count as deep nesting; only the right operands recurse.
+        chain: list[ast.BinOp] = []
+        while isinstance(node, ast.BinOp) and type(node.op) in _BINARY:
+            chain.append(node)
+            node = node.left
+        value = _eval(node, names, depth)
+        for link in reversed(chain):
+            right = _eval(link.right, names, depth)
+            if isinstance(link.op, ast.Pow) and abs(right) > _MAX_EXPONENT:
+                raise FormulaError(f"exponent {right} exceeds the limit of {_MAX_EXPONENT}")
+            value = _real(_BINARY[type(link.op)](value, right))
+        return value
     if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY:
         return _real(_UNARY[type(node.op)](_eval(node.operand, names, depth)))
     if isinstance(node, ast.Call):

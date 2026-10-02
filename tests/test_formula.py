@@ -72,3 +72,13 @@ def test_rejects_values_that_are_not_finite_floats(value: float) -> None:
 
 def test_placeholder_keys_may_look_like_internal_names() -> None:
     assert evaluate("{x_v1} + 1", {"x_v1": 2}) == 3
+
+
+def test_long_flat_sums_are_not_nesting() -> None:
+    assert evaluate("+".join(["{n}"] * 400), VALUES) == 1600
+    assert evaluate("10 - 2 - 3 * 2 / 4 ** 2 ** 0.5", VALUES) == pytest.approx(10 - 2 - 3 * 2 / 4**2**0.5)
+
+
+def test_round_needs_whole_digits() -> None:
+    with pytest.raises(FormulaError, match="whole number"):
+        evaluate("round(3.14159, 2.7)", VALUES)
