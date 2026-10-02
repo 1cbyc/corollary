@@ -153,6 +153,24 @@ def test_model_error_ends_the_run_but_keeps_the_report() -> None:
     assert agent.kb.value("revenue:Q2") == 4.3e9
 
 
+def test_async_tools_and_string_arguments() -> None:
+    @tool
+    async def revenue_in_billions(quarter: str, scale: float) -> float:
+        return REVENUE[quarter] / scale
+
+    call_it = {
+        "type": "call_tool",
+        "tool": "revenue_in_billions",
+        "args": {"quarter": "Q2", "scale": "1e9"},
+        "key": "rev:Q2",
+    }
+    agent = Agent(ScriptedModel([actions(call_it), actions(answer("4.3B", ["rev:Q2"]))]))
+    agent.tools["revenue_in_billions"] = revenue_in_billions
+    report = agent.run("t")
+    assert report.completed, report.rejections
+    assert agent.kb.value("rev:Q2") == pytest.approx(4.3)
+
+
 def test_claim_cannot_use_a_tool_result_from_the_same_turn() -> None:
     agent, _ = make_agent(
         actions(call("Q2"), call("Q3"), claim("g", 1.0, ["revenue:Q2"])),

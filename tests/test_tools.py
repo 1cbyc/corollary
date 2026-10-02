@@ -84,3 +84,57 @@ def test_trust_policy_lookup() -> None:
     assert trust.confidence_for("human:bob") == 0.99
     with pytest.raises(ValueError):
         TrustPolicy(sources={"tool": 1.5})
+
+
+@tool
+def scaled(n: int, factor: float = 1.0, exact: bool = False, label: str = "", limit: int | None = None) -> float:
+    return n * factor
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        ({"n": "3"}, {"n": 3, "factor": 1.0}),
+        ({"n": 3.0, "factor": 2}, {"n": 3, "factor": 2.0}),
+        ({"n": 1, "exact": "true", "label": 2024}, {"exact": True, "label": "2024"}),
+        ({"n": 1, "limit": None}, {"limit": None}),
+        ({"n": 1, "limit": "5"}, {"limit": 5}),
+    ],
+)
+def test_bind_coerces_unambiguous_values(args: dict[str, object], expected: dict[str, object]) -> None:
+    bound = scaled.bind(args)
+    assert {k: bound[k] for k in expected} == expected
+    assert all(type(bound[k]) is type(v) for k, v in expected.items())
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        ({"n": "three"}, "'n' must be int, got 'three'"),
+        ({"n": 2.5}, "'n' must be int"),
+        ({"n": True}, "'n' must be int"),
+        ({"n": 1, "exact": "maybe"}, "'exact' must be bool"),
+        ({"n": 1, "label": ["x"]}, "'label' must be str"),
+    ],
+)
+def test_bind_rejects_values_of_the_wrong_type(args: dict[str, object], message: str) -> None:
+    with pytest.raises(ContractViolation, match=message):
+        scaled.bind(args)
+
+
+@tool
+async def fetch(n: int) -> int:
+    return n * 2
+
+
+def test_async_tools_are_awaited() -> None:
+    assert fetch.invoke(fetch.bind({"n": 2})) == 4
+
+
+def test_async_tools_run_inside_a_running_event_loop() -> None:
+    import asyncio
+
+    async def main() -> int:
+        return fetch.invoke({"n": 3})  # type: ignore[no-any-return]
+
+    assert asyncio.run(main()) == 6

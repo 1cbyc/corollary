@@ -302,7 +302,7 @@ class Agent:
         if key == answer_key:
             raise ContractViolation(f"{answer_key!r} is reserved for the answer")
         try:
-            value = t.fn(**args)
+            value = t.invoke(args)
         except Exception as exc:
             raise ContractViolation(f"tool {t.name!r} raised {type(exc).__name__}: {exc}") from exc
         belief = self._record_tool_result(t, args, key, value, action.claim)
@@ -480,7 +480,7 @@ class Agent:
                 continue
             args = just.source.args
             try:
-                value = t.fn(**args)
+                value = t.invoke(args)
             except Exception:
                 continue  # Stays stale; the next reverify() will try again.
             self._record_tool_result(t, args, belief.key, value, belief.claim)
