@@ -124,6 +124,8 @@ def test_declared_dependencies_follow_follows_from() -> None:
         (claim("revenue:Q2", 1.0, []), "already holds 4,300,000,000"),
         (claim("bad key", 1, []), "invalid belief key"),
         (claim("answer", 1, []), "reserved for the answer"),
+        ({**call("Q2"), "key": "answer"}, "reserved for the answer"),
+        ({"type": "cite", "document": "none", "quote": "q", "key": "answer", "value": 1}, "reserved for the answer"),
         ({"type": "call_tool", "tool": "launch_missiles", "args": {}}, "unknown tool 'launch_missiles'"),
         ({"type": "call_tool", "tool": "get_revenue", "args": {"q": "Q2"}}, "invalid arguments"),
         ({"type": "call_tool", "tool": "get_revenue", "args": {"quarter": "Q7"}}, "raised KeyError"),

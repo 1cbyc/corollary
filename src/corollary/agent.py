@@ -241,7 +241,9 @@ class Agent:
 
     def _apply(self, action: Action, state: _StepState, answer_key: str, task: str) -> str:
         if isinstance(action, ToolCall):
-            return self._apply_tool_call(action, state)
+            return self._apply_tool_call(action, state, answer_key)
+        if isinstance(action, (Cite, Claim)) and action.key == answer_key:
+            raise ContractViolation(f"{answer_key!r} is reserved for the answer")
         if isinstance(action, Cite):
             try:
                 belief = self.kb.cite(
@@ -258,8 +260,6 @@ class Agent:
             self._learn(True, f"citation of {action.document!r} verified")
             return f"cited {belief.ref} from {action.document!r}"
         if isinstance(action, Claim):
-            if action.key == answer_key:
-                raise ContractViolation(f"{answer_key!r} is reserved for the answer")
             belief = self._apply_claim(
                 action.key,
                 action.value,
@@ -285,13 +285,15 @@ class Agent:
         )
         return f"answered as {belief.ref}"
 
-    def _apply_tool_call(self, action: ToolCall, state: _StepState) -> str:
+    def _apply_tool_call(self, action: ToolCall, state: _StepState, answer_key: str) -> str:
         t = self.tools.get(action.tool)
         if t is None:
             available = ", ".join(self.tools) or "none"
             raise ContractViolation(f"unknown tool {action.tool!r} (available: {available})")
         args = t.bind(action.args)
         key = validate_key(action.key or t.default_key(args))
+        if key == answer_key:
+            raise ContractViolation(f"{answer_key!r} is reserved for the answer")
         try:
             value = t.fn(**args)
         except Exception as exc:
