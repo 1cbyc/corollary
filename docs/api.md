@@ -22,7 +22,7 @@ is given. Signatures show keyword-only arguments after `*`. Every class and func
 
 | Method | Description |
 |---|---|
-| `register_rule(rule) -> Rule` | Register a rule for derivation, re-derivation and replay. |
+| `register_rule(rule, *, replace=False) -> Rule` | Register a rule for derivation, re-derivation and replay; `replace=True` swaps a same-named rule. |
 | `rules -> Mapping[str, Rule]` | Registered rules. |
 | `derive(key, rule, *inputs, unless=(), claim="", metadata=None) -> Belief` | Derive with a rule (a `Rule`, callable, or rule name). |
 | `justify(key, value, *, antecedents, source, claim="", formula=None, confidence=None, unless=(), inputs=None, note="", metadata=None) -> Belief` | Record a conclusion with explicit antecedents; formulas must reproduce `value`. |

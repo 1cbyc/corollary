@@ -337,11 +337,16 @@ class BeliefBase:
     # Deriving conclusions
     # ======================================================================================
 
-    def register_rule(self, r: Rule) -> Rule:
-        """Make a rule available for derivation, automatic re-derivation and proof replay."""
+    def register_rule(self, r: Rule, *, replace: bool = False) -> Rule:
+        """Make a rule available for derivation, automatic re-derivation and proof replay.
+
+        A different rule with the same name is an error unless ``replace=True`` (for example when
+        re-running a notebook cell). Beliefs already derived keep their values until an input
+        changes; derive them again to apply the new function now.
+        """
         existing = self._rules.get(r.name)
-        if existing is not None and existing.fn is not r.fn:
-            raise RuleError(f"a different rule named {r.name!r} is already registered")
+        if existing is not None and existing.fn is not r.fn and not replace:
+            raise RuleError(f"a different rule named {r.name!r} is already registered; pass replace=True to replace it")
         self._rules[r.name] = r
         return r
 
@@ -1414,10 +1419,12 @@ class BeliefBase:
                 if existing.fn is r:
                     return existing
             name = getattr(r, "__name__", "rule")
-            if name == "<lambda>":
-                # Anonymous rules get a unique name. Use named rules if the base will be persisted,
-                # since only names survive save()/load().
-                name = f"lambda:{sum(1 for n in self._rules if n.startswith('lambda:')) + 1}"
+            if name == "<lambda>" or name in self._rules:
+                # Anonymous functions, and different functions sharing a name (closures made by one
+                # factory), get a unique name. Use named rules if the base will be persisted, since
+                # only names survive save()/load().
+                stem, first = ("lambda", 1) if name == "<lambda>" else (name, 2)  # the first one is plain `name`
+                name = f"{stem}:{sum(1 for n in self._rules if n.startswith(f'{stem}:')) + first}"
             return self.register_rule(Rule(name=name, fn=r))
         raise TypeError(f"expected a Rule, a callable or a rule name, got {type(r).__name__}")
 

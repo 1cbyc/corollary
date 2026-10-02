@@ -520,3 +520,20 @@ def test_propagation_settled(kb: BeliefBase) -> None:
     assert not result.settled and result.conflicts
     kb.resolve(result.conflicts[0], keep="k@2")
     assert kb.propagate().settled
+
+
+def test_rules_can_be_replaced_and_same_named_functions_coexist(kb: BeliefBase) -> None:
+    kb.register_rule(growth)
+    kb.register_rule(rule(lambda a, b: 0, name="growth"), replace=True)
+    assert kb.rules["growth"].fn(1, 2) == 0
+
+    def make(factor: float):  # type: ignore[no-untyped-def]
+        def scale(x: float) -> float:
+            return x * factor
+
+        return scale
+
+    kb.assert_("x", 10)
+    assert kb.derive("double", make(2), "x").value == 20
+    assert kb.derive("triple", make(3), "x").value == 30
+    assert {"scale", "scale:2"} <= set(kb.rules)
