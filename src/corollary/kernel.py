@@ -447,7 +447,10 @@ class BeliefBase:
             raise ValueError(f"fault must be 'none' or 'source', got {fault!r}")
         key, revision = parse_ref(key_or_ref)
         if revision is not None:
-            nodes = [self._node(key_or_ref)]
+            node = self._node(key_or_ref)
+            if node.retracted:
+                return []  # Already withdrawn; retracting again must not blame its sources twice.
+            nodes = [node]
         else:
             self._require_key(key)
             nodes = self._in_nodes(key)
@@ -799,7 +802,14 @@ class BeliefBase:
         """
         if (keep is None) == (retract is None):
             raise ValueError("pass exactly one of keep= or retract=")
-        chosen = {self._node(_as_ref(self, x)).ref for x in _as_list(keep if keep is not None else retract)}
+        chosen: set[str] = set()
+        for item in _as_list(keep if keep is not None else retract):
+            sides = [r for r in conflict.refs if isinstance(item, str) and parse_ref(r)[0] == item]
+            if len(sides) > 1:
+                raise ValueError(
+                    f"{item!r} is on several sides of conflict {conflict.id} ({', '.join(sides)}); pass a ref"
+                )
+            chosen.add(sides[0] if sides else self._node(_as_ref(self, item)).ref)
         unknown = chosen - set(conflict.refs)
         if unknown:
             raise ValueError(f"{', '.join(sorted(unknown))} are not part of conflict {conflict.id}")
@@ -831,6 +841,12 @@ class BeliefBase:
                 decision = resolver(conflict, self)
                 if decision is None or not decision.retract:
                     continue
+                unknown = sorted(set(decision.retract) - set(conflict.refs))
+                if unknown:
+                    raise ValueError(
+                        f"resolver {resolver!r} retracts {', '.join(unknown)}, "
+                        f"which are not part of conflict {conflict.id}"
+                    )
                 if not self._apply_resolution(conflict, decision):
                     continue
                 applied.append(decision)

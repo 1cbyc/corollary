@@ -473,3 +473,29 @@ def test_supersede_resolves_the_conflict_when_the_value_already_exists(kb: Belie
     assert belief.ref == "k@2"
     assert kb.conflicts() == []
     assert kb.status("k@1") is Status.OUT and kb.value("k") == 2
+
+
+def test_retracting_a_retracted_ref_does_not_blame_its_source_twice(kb: BeliefBase) -> None:
+    kb.assert_("a", 1, source="tool:x")
+    kb.retract("a@1", fault="source")
+    assert kb.retract("a@1", fault="source") == []
+    assert kb.ledger.record_of("tool:x").wrong == 1
+
+
+def test_resolve_with_an_ambiguous_key_asks_for_a_ref(kb: BeliefBase) -> None:
+    kb.assert_("k", 1, source="tool:a")
+    kb.assert_("k", 2, source="tool:b")
+    (conflict,) = kb.conflicts()
+    with pytest.raises(ValueError, match="several sides"):
+        kb.resolve(conflict, keep="k")
+    kb.resolve(conflict, keep="k@2")
+    assert kb.value("k") == 2
+
+
+def test_a_resolver_naming_refs_outside_the_conflict_is_an_error(kb: BeliefBase) -> None:
+    from corollary import Resolution
+
+    kb.assert_("k", 1, source="tool:a")
+    kb.assert_("k", 2, source="tool:b")
+    with pytest.raises(ValueError, match="nope@1"):
+        kb.resolve_conflicts(lambda c, _kb: Resolution(c.id, ("nope@1",), "bad"))
