@@ -50,11 +50,23 @@ def parse_ref(text: str) -> tuple[str, int | None]:
 def values_equal(a: Any, b: Any, *, rel_tol: float = 1e-9, abs_tol: float = 1e-12) -> bool:
     """Equality used to decide whether a re-derived value "changed".
 
-    Numbers compare with a tight tolerance so floating-point noise does not cause spurious
-    cascades; everything else compares with ``==``.
+    Floats compare with a tight tolerance so floating-point noise does not cause spurious
+    cascades, and NaN equals NaN. Integers compare exactly (they have no noise, and large ones,
+    like IDs, lose precision as floats). Lists and tuples compare element by element, because a
+    tuple comes back from a JSON snapshot as a list. Everything else compares with ``==``.
     """
     if _is_number(a) and _is_number(b):
+        if isinstance(a, int) and isinstance(b, int):
+            return a == b
+        if math.isnan(a) or math.isnan(b):
+            return math.isnan(a) and math.isnan(b)
         return math.isclose(float(a), float(b), rel_tol=rel_tol, abs_tol=abs_tol)
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(
+            values_equal(x, y, rel_tol=rel_tol, abs_tol=abs_tol) for x, y in zip(a, b, strict=True)
+        )
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(values_equal(a[k], b[k], rel_tol=rel_tol, abs_tol=abs_tol) for k in a)
     try:
         return bool(a == b)
     except Exception:  # pragma: no cover - exotic objects with broken __eq__

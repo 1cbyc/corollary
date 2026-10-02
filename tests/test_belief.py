@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from corollary import Belief, InvalidKeyError, Source, SourceKind
+from corollary import Belief, BeliefBase, InvalidKeyError, Source, SourceKind
 from corollary.belief import format_value, make_ref, parse_ref, validate_key, values_equal
 
 
@@ -50,6 +50,31 @@ def test_values_equal_tolerates_float_noise() -> None:
     assert not values_equal(1.0, 1.001)
     assert values_equal("a", "a") and not values_equal("a", "b")
     assert values_equal(1, 1.0)
+
+
+def test_values_equal_edge_cases() -> None:
+    assert not values_equal(1234567890123, 1234567890124)  # ints are exact
+    assert values_equal(float("nan"), float("nan"))
+    assert not values_equal(float("nan"), 1.0)
+    assert values_equal((1, 2.0), [1, 2.0 + 1e-15])  # tuples come back from JSON as lists
+    assert not values_equal((1, 2), [1, 2, 3])
+    assert values_equal({"a": [1, 0.1 + 0.2]}, {"a": (1, 0.3)})
+    assert not values_equal({"a": 1}, {"b": 1})
+
+
+def test_reasserting_equal_values_after_a_round_trip_is_not_a_conflict() -> None:
+    kb = BeliefBase.from_dict(_kb_with(("t", (1, 2)), ("x", float("nan"))).to_dict())
+    kb.assert_("t", (1, 2), source="tool:a")
+    kb.assert_("x", float("nan"), source="tool:a")
+    assert kb.conflicts() == []
+    assert len(kb.revisions("t")) == 1 and len(kb.revisions("x")) == 1
+
+
+def _kb_with(*items: tuple[str, object]) -> BeliefBase:
+    kb = BeliefBase()
+    for key, value in items:
+        kb.assert_(key, value, source="tool:a")
+    return kb
 
 
 @pytest.mark.parametrize(
