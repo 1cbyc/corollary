@@ -18,7 +18,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from .belief import Belief, Source, SourceKind, Status, format_value, validate_key, values_equal
+from .belief import Belief, Source, SourceKind, Status, format_value, parse_ref, validate_key, values_equal
 from .changes import Change, Propagation
 from .conflict import Resolver
 from .contract import SYSTEM_PROMPT, Action, Answer, Cite, Claim, ToolCall, parse_response
@@ -354,26 +354,12 @@ class Agent:
         is_answer: bool = False,
     ) -> Belief:
         validate_key(key)
-        deps = list(dict.fromkeys([*follows_from, *(formula_keys(formula) if formula else [])]))
+        deps = _dependencies(follows_from, formula)
         for dep in deps:
             self._check_visible(dep, state)
         if formula is not None:
             values = {d: self._visible_value(d, state) for d in formula_keys(formula)}
-            computed = evaluate(formula, values)
-            if value is None:
-                value = computed
-            elif (
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not values_equal(computed, value, rel_tol=1e-6, abs_tol=1e-9)
-            ):
-                self._learn(False, f"formula for {key!r} did not reproduce the stated value")
-                raise ContractViolation(
-                    f"formula {formula!r} evaluates to {format_value(computed)}, "
-                    f"but the claim states {format_value(value)}"
-                )
-            else:
-                self._learn(True, f"formula for {key!r} verified")
+            value = self._checked_formula_value(key, formula, value, values)
         if value is None:
             raise ContractViolation(f"claim {key!r} has no value")
         existing = self.kb.get(key)
@@ -408,6 +394,25 @@ class Agent:
             inputs=[b.key for b in antecedents],
             note=note,
         )
+
+    def _checked_formula_value(self, key: str, formula: str, value: Any, values: Mapping[str, Any]) -> Any:
+        """Re-execute ``formula``: return the computed value when none was stated, the stated value
+        when the formula reproduces it, and reject the claim otherwise. Either way the model's
+        track record learns from it."""
+        computed = evaluate(formula, values)
+        if value is None:
+            return computed
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not values_equal(computed, value, rel_tol=1e-6, abs_tol=1e-9)
+        ):
+            self._learn(False, f"formula for {key!r} did not reproduce the stated value")
+            raise ContractViolation(
+                f"formula {formula!r} evaluates to {format_value(computed)}, but the claim states {format_value(value)}"
+            )
+        self._learn(True, f"formula for {key!r} verified")
+        return value
 
     @staticmethod
     def _certainty(stated: float | None) -> float:
@@ -514,7 +519,7 @@ class Agent:
         just = self.kb.support(belief.ref)
         if just is None or just.kind is not JustificationKind.MODEL:
             raise CorollaryError(f"{key!r} is not supported by a model justification; nothing to narrow")
-        current = list(dict.fromkeys(self.kb._nodes[a].belief.key for a in just.antecedents))
+        current = list(dict.fromkeys(parse_ref(a)[0] for a in just.antecedents))
         pruned: list[str] = []
         calls = 0
         for candidate in list(current):
@@ -613,24 +618,14 @@ class Agent:
 
     def _validate_rederived(self, claim: Claim, projection: Projection, is_answer: bool) -> Derived:
         allowed = set(projection.keys)
-        deps = list(dict.fromkeys([*claim.follows_from, *(formula_keys(claim.formula) if claim.formula else [])]))
+        deps = _dependencies(claim.follows_from, claim.formula)
         outside = [d for d in deps if d not in allowed]
         if outside:
             raise ContractViolation(f"uses beliefs outside the provided context: {', '.join(outside)}")
         value = claim.value
         if claim.formula:
-            computed = evaluate(claim.formula, {k: projection.belief(k).value for k in formula_keys(claim.formula)})  # type: ignore[union-attr]
-            if value is None:
-                value = computed
-            elif (
-                not isinstance(value, (int, float))
-                or isinstance(value, bool)
-                or not values_equal(computed, value, rel_tol=1e-6, abs_tol=1e-9)
-            ):
-                self._learn(False, f"formula for {claim.key!r} did not reproduce the stated value")
-                raise ContractViolation(f"formula evaluates to {format_value(computed)}, not {format_value(value)}")
-            else:
-                self._learn(True, f"formula for {claim.key!r} verified")
+            values = {k: _required(projection.belief(k)).value for k in formula_keys(claim.formula)}
+            value = self._checked_formula_value(claim.key, claim.formula, value, values)
         if value is None:
             raise ContractViolation("the claim has no value")
         return Derived(
@@ -650,6 +645,16 @@ def _describe(action: Action) -> str:
     if isinstance(action, Claim):
         return f"claim {action.key!r}"
     return "answer"
+
+
+def _dependencies(follows_from: Sequence[str], formula: str | None) -> list[str]:
+    """The keys a claim rests on: the ones it lists, plus the ones its formula reads."""
+    return list(dict.fromkeys([*follows_from, *(formula_keys(formula) if formula else [])]))
+
+
+def _required(belief: Belief | None) -> Belief:
+    assert belief is not None  # formula keys were checked against the context first
+    return belief
 
 
 def _latest_tool_premise(justifications: Sequence[Justification]) -> Justification | None:
