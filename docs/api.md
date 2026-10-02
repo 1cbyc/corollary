@@ -146,7 +146,8 @@ Fields: `id`, `conclusion`, `kind` (`JustificationKind.PREMISE | RULE | MODEL`),
 ### `Propagation`
 
 A sequence of `Change`s with extra fields: `pending`, `conflicts`, `rederived`. Properties: `retracted`,
-`added`, `kept`. Method: `of_kind(kind)`.
+`added`, `kept`, and `settled` (nothing pending, no open conflict). Method: `of_kind(kind)`. Like any
+sequence it is falsy when there are no changes, even with pending beliefs or open conflicts.
 
 ## Rules and tools
 

@@ -64,6 +64,9 @@ class Propagation(Sequence[Change]):
 
         for change in kb.propagate():
             print(change)
+
+    Like any sequence, it is falsy when there are no changes, even if beliefs are still pending or
+    conflicts are open; check :attr:`settled` for that.
     """
 
     changes: list[Change] = field(default_factory=list)
@@ -102,6 +105,11 @@ class Propagation(Sequence[Change]):
     @property
     def kept(self) -> list[Change]:
         return self.of_kind(ChangeKind.KEPT)
+
+    @property
+    def settled(self) -> bool:
+        """True when nothing is waiting to be re-derived and no conflict is open."""
+        return not self.pending and not self.conflicts
 
     def __str__(self) -> str:
         lines = [str(c) for c in self.changes]

@@ -511,3 +511,12 @@ def test_confidence_values_are_validated_everywhere() -> None:
         Rule("", lambda: 1)
     with pytest.raises(ValueError, match="between 0 and 1"):
         Derived(1, confidence=1.5)
+
+
+def test_propagation_settled(kb: BeliefBase) -> None:
+    kb.assert_("k", 1, source="tool:a")
+    kb.assert_("k", 2, source="tool:b")
+    result = kb.propagate()
+    assert not result.settled and result.conflicts
+    kb.resolve(result.conflicts[0], keep="k@2")
+    assert kb.propagate().settled
