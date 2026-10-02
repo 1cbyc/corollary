@@ -47,8 +47,9 @@ Expiry is checked against the base's clock:
 expired = kb.refresh()  # beliefs that just went OUT because their evidence expired
 ```
 
-`refresh()` is called automatically by `propagate()`, by the projector before building every context,
-and by the agent before every step. Expired premises go `OUT` with reason `expired`, and their
+`refresh()` is called automatically by `propagate()`, `derive()` and `justify()`, by the projector before
+building every context, and by the agent before every step, so a new conclusion never rests on evidence
+that has expired. Expired premises go `OUT` with reason `expired`, and their
 dependents go `OUT` with them. Expired evidence is never shown to a model.
 
 ## Stale beliefs and re-verification

@@ -363,6 +363,7 @@ class BeliefBase:
         makes the derivation non-monotonic: it holds only while none of those keys is believed.
         When an input later changes, :meth:`propagate` re-runs the rule automatically.
         """
+        self.refresh()  # never derive from evidence that has expired since the last check
         r = self._coerce_rule(rule)
         nodes = [self._resolve_antecedent(item) for item in inputs]
         try:
@@ -410,6 +411,7 @@ class BeliefBase:
         applied on top when confidence is computed; see :meth:`confidence`.
         """
         src = Source.parse(source)
+        self.refresh()  # never conclude from evidence that has expired since the last check
         nodes = [self._resolve_antecedent(item) for item in _keys(antecedents)]
         if formula is not None:
             values = {n.belief.key: n.belief.value for n in nodes}
@@ -562,6 +564,10 @@ class BeliefBase:
     def refresh(self) -> list[Belief]:
         """Re-check validity windows against the clock. Returns beliefs that just expired."""
         now = self.now()
+        # Forget beliefs that no longer have any evidence with a validity window.
+        self._expiring = {
+            ref for ref in self._expiring if any(j.valid_until is not None for j in self._nodes[ref].justifications)
+        }
         seeds = [
             ref
             for ref in self._expiring
@@ -1241,6 +1247,7 @@ class BeliefBase:
         if not refs:
             del self._revisions[node.belief.key]
         del self._nodes[node.ref]
+        self._expiring.discard(node.ref)
         self._baseline.pop(node.ref, None)
         self._hints.pop(node.ref, None)
 
