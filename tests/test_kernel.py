@@ -451,3 +451,15 @@ def test_a_failed_assertion_leaves_the_base_unchanged(kb: BeliefBase, monkeypatc
     assert [b.ref for b in kb.revisions("a")] == ["a@1"]
     assert BeliefBase.from_dict(kb.to_dict()).value("a") == 1
     assert kb.to_dict()["beliefs"] == before["beliefs"]
+
+
+def test_a_lone_string_is_one_key_not_its_characters(kb: BeliefBase) -> None:
+    kb.assert_("price", 10, source="tool:x")
+    kb.derive("discounted", lambda p: p * 0.9, "price", unless="override")
+    support = kb.support("discounted")
+    assert support is not None and support.unless == ("override",)
+    kb.justify("double", 20, antecedents="price", source="model:m", inputs="price")
+    support = kb.support("double")
+    assert support is not None and support.antecedents == ("price@1",) and support.inputs == ("price",)
+    constraint = kb.add_constraint("positive", "price", lambda p: p > 0)
+    assert constraint.keys == ("price",)

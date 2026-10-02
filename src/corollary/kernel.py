@@ -366,7 +366,7 @@ class BeliefBase:
             kind=JustificationKind.RULE,
             antecedents=tuple(n.ref for n in nodes),
             inputs=tuple(n.belief.key for n in nodes),
-            unless=tuple(unless),
+            unless=_keys(unless),
             source=Source.rule(r.name),
             rule=r.name,
             confidence=r.confidence,
@@ -401,7 +401,7 @@ class BeliefBase:
         applied on top when confidence is computed; see :meth:`confidence`.
         """
         src = Source.parse(source)
-        nodes = [self._resolve_antecedent(item) for item in antecedents]
+        nodes = [self._resolve_antecedent(item) for item in _keys(antecedents)]
         if formula is not None:
             values = {n.belief.key: n.belief.value for n in nodes}
             missing = [k for k in formula_keys(formula) if k not in values]
@@ -418,8 +418,8 @@ class BeliefBase:
             value,
             kind=JustificationKind.MODEL,
             antecedents=tuple(n.ref for n in nodes),
-            inputs=tuple(inputs) if inputs is not None else tuple(n.belief.key for n in nodes),
-            unless=tuple(unless),
+            inputs=_keys(inputs) if inputs is not None else tuple(n.belief.key for n in nodes),
+            unless=_keys(unless),
             source=src,
             formula=formula,
             confidence=conf,
@@ -733,7 +733,7 @@ class BeliefBase:
         if isinstance(constraint, str):
             if keys is None or predicate is None:
                 raise ValueError("add_constraint(name, keys, predicate) requires keys and a predicate")
-            constraint = Constraint(constraint, tuple(keys), predicate, description)
+            constraint = Constraint(constraint, _keys(keys), predicate, description)
         self._constraints[constraint.name] = constraint
         return constraint
 
@@ -1700,6 +1700,11 @@ def _numeric_match(computed: float, stated: Any) -> bool:
     if isinstance(stated, bool) or not isinstance(stated, (int, float)):
         return False
     return values_equal(computed, stated, rel_tol=1e-6, abs_tol=1e-9)
+
+
+def _keys(items: str | Iterable[str]) -> tuple[str, ...]:
+    """Keys from an iterable, treating a lone string as one key rather than as its characters."""
+    return (items,) if isinstance(items, str) else tuple(items)
 
 
 def _as_list(items: str | Belief | Iterable[str | Belief] | None) -> list[str | Belief]:
