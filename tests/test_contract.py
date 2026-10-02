@@ -122,3 +122,31 @@ def test_unambiguous_slips_are_accepted() -> None:
     assert isinstance(first, Claim) and first.confidence == 0.9
     assert isinstance(second, Claim) and second.confidence == pytest.approx(0.8)
     assert answer == Answer("42")
+
+
+def test_an_example_action_in_prose_does_not_displace_the_real_list() -> None:
+    text = (
+        'Actions: [{"type": "claim", "key": "g", "value": 0.1, "claim": "growth"},'
+        ' {"type": "answer", "text": "Growth was 10%", "follows_from": ["g"]}]'
+        ' Reminder: an answer looks like {"type": "answer", "text": "..."}'
+    )
+    claim_action, answer_action = parse_response(text).actions
+    assert isinstance(claim_action, Claim) and answer_action == Answer("Growth was 10%", ("g",))
+
+
+@pytest.mark.parametrize("value", ["{1, 2}", "b'ab'", "1+2j"])
+def test_python_literals_must_hold_json_values(value: str) -> None:
+    with pytest.raises(ContractViolation):
+        parse_response("{'actions': [{'type': 'claim', 'key': 'x', 'value': " + value + "}]}")
+
+
+def test_python_literal_tuples_become_lists() -> None:
+    (action,) = parse_response("{'actions': [{'type': 'claim', 'key': 'x', 'value': (1, 2)}]}").actions
+    assert isinstance(action, Claim) and action.value == [1, 2]
+
+
+def test_absurd_json_is_a_contract_violation_not_a_crash() -> None:
+    with pytest.raises(ContractViolation):
+        parse_response('{"actions": [{"type": "answer", "text": ' + "9" * 5000 + "}]}")
+    with pytest.raises(ContractViolation):
+        parse_response("[" * 100_000)

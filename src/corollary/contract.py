@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import json
+import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -142,9 +143,9 @@ def extract_json(text: str) -> Any:
     """Find the JSON payload in a model response (bare, fenced, or embedded in prose).
 
     A response may contain several JSON values, for example a list of numbers in a sentence
-    before the actions. The first value shaped like a response wins: an object with ``actions``,
-    then a single action object, then a list of action objects. Python-style literals (single
-    quotes, ``True``, ``None``) are accepted as a last resort.
+    before the actions. An object with ``actions`` wins; otherwise the first single action or list
+    of actions does. Python-style literals (single quotes, ``True``, ``None``) are accepted as a
+    last resort, as long as they hold only JSON values.
     """
     stripped = text.strip()
     blocks = [stripped, *(m.group(1).strip() for m in _FENCE.finditer(text))]
@@ -155,6 +156,8 @@ def extract_json(text: str) -> Any:
             found.append(json.loads(block))
         except json.JSONDecodeError as exc:
             error = error or exc
+        except (ValueError, RecursionError):  # an integer with thousands of digits, absurd nesting
+            continue
     whole_block_decoded = bool(found)
     if not any(_shape(p) < _NOT_A_RESPONSE for p in found):
         found += _embedded_json(text)
@@ -180,18 +183,29 @@ def _shape(payload: Any) -> int:
     if isinstance(payload, dict):
         return 0 if "actions" in payload else 1 if "type" in payload else _NOT_A_RESPONSE
     if isinstance(payload, list) and payload and all(isinstance(item, dict) for item in payload):
-        return 2
+        # A list of actions is as good as a single one, so an example action quoted later in the
+        # prose can't displace the real list that came first.
+        return 1 if any("type" in item for item in payload) else 2
     return _NOT_A_RESPONSE
+
+
+_MAX_DECODE_ATTEMPTS = 200
 
 
 def _embedded_json(text: str) -> list[Any]:
     decoder = json.JSONDecoder()
     found: list[Any] = []
     position = 0
+    failures = 0
     while (start := _next_bracket(text, position)) != -1:
         try:
             payload, end = decoder.raw_decode(text, start)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
+            # Each failed attempt can scan to the end of the text, so a response full of brackets
+            # ("[[[[...") would take quadratic time. Real responses need only a few attempts.
+            failures += 1
+            if failures > _MAX_DECODE_ATTEMPTS:
+                break
             position = start + 1
             continue
         found.append(payload)
@@ -208,12 +222,24 @@ def _python_literals(blocks: list[str]) -> list[Any]:
     found: list[Any] = []
     for block in blocks:
         try:
-            payload = ast.literal_eval(block)
+            payload = _json_values(ast.literal_eval(block))
         except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
             continue
         if _shape(payload) < _NOT_A_RESPONSE:
             found.append(payload)
     return found
+
+
+def _json_values(value: Any) -> Any:
+    """``value`` with tuples as lists, or ``TypeError`` if it holds anything JSON can't (a set,
+    bytes, a complex number), so a Python literal can't put an unsaveable value in the base."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_values(v) for v in value]
+    if isinstance(value, dict) and all(isinstance(k, str) for k in value):
+        return {k: _json_values(v) for k, v in value.items()}
+    raise TypeError(f"{type(value).__name__} is not a JSON value")
 
 
 def parse_response(text: str) -> ParsedResponse:
@@ -347,7 +373,7 @@ def parse_action(item: Any) -> Action:
         )
     else:
         text = item.get("text")
-        if isinstance(text, (int, float)) and not isinstance(text, bool):
+        if isinstance(text, (int, float)) and not isinstance(text, bool) and math.isfinite(text):
             item = {**item, "text": str(text)}  # a bare number is a fine answer text
         action = Answer(text=text_field("text"), follows_from=keys_field("follows_from"), confidence=confidence_field())
     if errors:
