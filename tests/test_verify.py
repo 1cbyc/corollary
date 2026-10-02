@@ -174,3 +174,20 @@ def test_numeric_provenance_ignores_dates_and_times(kb: BeliefBase) -> None:
     )
     report = kb.proof("summary").verify(kb, checks=[NumericProvenanceCheck()])
     assert report.warnings == []
+
+
+def test_a_naive_check_time_is_taken_as_utc(kb: BeliefBase) -> None:
+    from datetime import datetime, timedelta
+
+    kb.assert_("price", 10, source="tool:x", ttl=timedelta(days=1))
+    report = kb.proof("price").verify(kb, at=datetime(2030, 1, 1))
+    assert not report.ok and any("expired" in r.message for r in report.errors)
+
+
+def test_a_blank_quote_is_a_missing_quote(kb: BeliefBase) -> None:
+    from corollary import Source
+
+    kb.add_document("doc", "Revenue was $4.3 billion.")
+    kb.assert_("rev", 4.3e9, source=Source.document("doc", quote="   "))
+    report = kb.proof("rev").verify(kb, checks=[CitationCheck()])
+    assert [w.message for w in report.warnings] == ["cites 'doc' without a quote"]

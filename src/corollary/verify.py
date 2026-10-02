@@ -14,7 +14,7 @@ from __future__ import annotations
 import enum
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from .belief import SourceKind, Status, format_value, utcnow, values_equal
@@ -243,7 +243,7 @@ class CitationCheck:
                 continue
             checked += 1
             quote = source.quote
-            if not quote:
+            if not quote or not quote.strip():
                 failures.append(
                     CheckResult(self.name, False, f"cites {source.name!r} without a quote", step.ref, Severity.WARNING)
                 )
@@ -373,6 +373,10 @@ class Verifier:
         self.checks: list[Check] = list(checks) if checks is not None else [cls() for cls in DEFAULT_CHECKS]
 
     def verify(self, proof: Proof, *, kb: BeliefBase | None = None, at: datetime | None = None) -> VerificationReport:
+        """Run every check. ``at`` is the time to check validity against (default: now). A naive
+        ``at`` is taken as UTC, unless the belief base itself runs on a naive clock."""
+        if at is not None and at.tzinfo is None and (kb is None or kb.now().tzinfo is not None):
+            at = at.replace(tzinfo=timezone.utc)
         ctx = VerificationContext(
             at=at or (kb.now() if kb is not None else utcnow()),
             kb=kb,
