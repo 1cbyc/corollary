@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0a2] - 2026-10-02
+
 ### Added
 
 - `Agent(instructions=...)` and `run(task, instructions=...)` for domain guidance, without replacing the
@@ -100,5 +102,6 @@ First public pre-release.
 - **Persistence.** JSON snapshots with `save()` / `load()`, including the trust ledger.
 - Examples: a 20-conclusion self-repairing report, an offline agent, and a Claude agent.
 
-[Unreleased]: https://github.com/gabe-santana/corollary/compare/v0.1.0a1...HEAD
+[Unreleased]: https://github.com/gabe-santana/corollary/compare/v0.1.0a2...HEAD
+[0.1.0a2]: https://github.com/gabe-santana/corollary/compare/v0.1.0a1...v0.1.0a2
 [0.1.0a1]: https://github.com/gabe-santana/corollary/releases/tag/v0.1.0a1
