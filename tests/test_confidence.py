@@ -271,3 +271,55 @@ def test_version_1_snapshots_are_migrated(kb: BeliefBase) -> None:
     loaded = BeliefBase.from_dict(data)
     assert loaded.confidence("t") == pytest.approx(kb.confidence("t"))
     assert loaded.confidence("h") == pytest.approx(kb.confidence("h"))
+
+
+# -- caching ---------------------------------------------------------------------------------------
+
+
+def test_editing_the_trust_policy_in_place_updates_confidence(kb: BeliefBase) -> None:
+    kb.assert_("x", 1, source="human:alice")
+    kb.justify("y", 2, antecedents=["x"], source="model:m")  # model steps read the policy live
+    assert kb.confidence("y") == pytest.approx(0.9 * 0.99)
+    kb.trust.overrides["model:m"] = 0.5
+    assert kb.confidence("y") == pytest.approx(0.5 * 0.99)
+
+
+def test_a_forgetting_ledger_updates_confidence_as_time_passes(clock: Clock) -> None:
+    kb = BeliefBase(clock=clock, ledger=TrustLedger(memory_half_life=timedelta(days=1)))
+    kb.assert_("x", 1, source="tool:a")
+    kb.retract("x", fault="source")
+    kb.assert_("y", 1, source="tool:a")
+    shaken = kb.confidence("y")
+    assert shaken < 0.95
+    clock.advance(days=30)  # the mistake is all but forgotten
+    assert kb.confidence("y") == pytest.approx(0.95, abs=1e-6)
+    assert kb.reliability("tool:a") == pytest.approx(kb.confidence("y"))
+
+
+def test_the_ledger_cache_stays_small_and_fresh(clock: Clock) -> None:
+    ledger = TrustLedger(memory_half_life=timedelta(days=1))
+    ledger.record("tool:a", False, at=clock())
+    for _ in range(100):
+        clock.advance(hours=1)
+        ledger.reliability("tool:a", prior=0.9, at=clock())
+    assert len(ledger._cache) == 1
+    first = ledger.reliability("tool:a", prior=0.9)  # at=None means now, so never cached
+    assert ledger.reliability("tool:a", prior=0.9) == pytest.approx(first)
+
+
+def test_confidence_of_a_long_chain_is_linear(kb: BeliefBase, monkeypatch: pytest.MonkeyPatch) -> None:
+    kb.assert_("n0", 1, source="tool:a")
+    kb.assert_("n1", 1, source="tool:a")
+    for i in range(2, 1000):  # every node depends on the previous two
+        kb.derive(f"n{i}", lambda a, b: 1, f"n{i - 1}", f"n{i - 2}")
+    calls = 0
+    original = kb._node_confidence
+
+    def counting(*args: object) -> float:
+        nonlocal calls
+        calls += 1
+        return original(*args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(kb, "_node_confidence", counting)
+    kb.confidence("n999")
+    assert calls <= 2 * 1000

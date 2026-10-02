@@ -57,6 +57,10 @@ class TrustPolicy:
             return self.overrides[exact]
         return self.sources.get(src.kind.value, 0.5)
 
+    def fingerprint(self) -> tuple[object, ...]:
+        """The settings confidence depends on, so caches notice when the policy is edited in place."""
+        return (tuple(self.sources.items()), tuple(self.overrides.items()), self.corroboration)
+
     def tool_confidence(self, trust: str | float) -> float:
         """Resolve a tool's ``trust`` setting (a level name or a number) to a confidence."""
         if isinstance(trust, (int, float)):

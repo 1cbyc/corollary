@@ -939,7 +939,13 @@ class BeliefBase:
         """
         node = self._resolve(key_or_ref)
         now = self._confidence_time()
-        epoch = (self._version, self.ledger.version, id(self.trust), now if self._decaying else None)
+        epoch = (
+            self._version,
+            self.ledger.version,
+            id(self.trust),
+            self.trust.fingerprint(),
+            now if self._time_dependent else None,
+        )
         if epoch != self._conf_epoch:
             self._conf_cache, self._conf_epoch = {}, epoch
         if node.ref not in self._conf_cache:
@@ -1558,11 +1564,16 @@ class BeliefBase:
     # Internals: confidence and the trust ledger
     # ======================================================================================
 
+    @property
+    def _time_dependent(self) -> bool:
+        """Whether confidence changes with time alone: evidence decay, or a ledger that forgets."""
+        return self._decaying or self.ledger.memory_half_life is not None
+
     def _confidence_time(self) -> datetime:
         # With decay, confidence depends on time. Millisecond granularity lets repeated queries
         # in one step share the cache without any meaningful loss of precision.
         now = self.now()
-        return now.replace(microsecond=now.microsecond // 1000 * 1000) if self._decaying else now
+        return now.replace(microsecond=now.microsecond // 1000 * 1000) if self._time_dependent else now
 
     def _compute_confidence(self, root: str, now: datetime) -> None:
         """Fill the cache for ``root`` and everything its confidence depends on.
@@ -1572,21 +1583,25 @@ class BeliefBase:
         values in [0, 1], noisy-OR over premises only), so support cycles cannot inflate values
         and iteration converges.
         """
+        # Postorder: every belief comes after what it depends on, so an acyclic graph settles in
+        # a single pass (plus one to confirm); only support cycles need more.
         order: list[str] = []
         seen: set[str] = set()
-        stack = [root]
+        stack: list[tuple[str, bool]] = [(root, False)]
         while stack:
-            ref = stack.pop()
+            ref, expanded = stack.pop()
+            if expanded:
+                order.append(ref)
+                continue
             if ref in seen or ref in self._conf_cache:
                 continue
             seen.add(ref)
-            order.append(ref)
+            stack.append((ref, True))
             node = self._nodes[ref]
             if node.status is Status.IN:
                 for j in node.justifications:
                     if self._valid(j, now):
-                        stack.extend(j.antecedents)
-        order.reverse()  # dependencies first, so most graphs settle in one pass
+                        stack.extend((a, False) for a in j.antecedents if a not in seen)
         values = dict.fromkeys(order, 0.0)
 
         def get(ref: str) -> float:
