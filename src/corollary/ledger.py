@@ -25,6 +25,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ._io import write_atomically
 from .belief import Source, utcnow
 
 _FORMAT = "corollary.trustledger"
@@ -217,7 +218,8 @@ class TrustLedger:
         return ledger
 
     def save(self, path: str | os.PathLike[str]) -> None:
-        Path(path).write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        """Write the ledger as JSON, atomically."""
+        write_atomically(path, json.dumps(self.to_dict(), indent=2))
 
     @classmethod
     def load(cls, path: str | os.PathLike[str]) -> TrustLedger:

@@ -21,6 +21,7 @@ import dataclasses
 import itertools
 import json
 import os
+import warnings
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from collections.abc import Set as AbstractSet
@@ -29,6 +30,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ._io import write_atomically
 from .belief import Belief, Source, SourceKind, Status, format_value, parse_ref, utcnow, validate_key, values_equal
 from .changes import Change, ChangeKind, Pending, Propagation
 from .conflict import Conflict, ConflictKind, Constraint, Resolution, Resolver, describe_values
@@ -1125,6 +1127,22 @@ class BeliefBase:
         version = int(data.get("version", 0))
         if version > _FORMAT_VERSION:
             raise ValueError(f"snapshot version {data['version']} is newer than this library supports")
+        try:
+            return cls._from_snapshot(data, version, rules, constraints, trust, clock, ledger)
+        except (KeyError, TypeError, IndexError, AttributeError) as exc:
+            raise ValueError(f"corrupt Corollary snapshot: missing or malformed {exc}") from exc
+
+    @classmethod
+    def _from_snapshot(
+        cls,
+        data: Mapping[str, Any],
+        version: int,
+        rules: Iterable[Rule],
+        constraints: Iterable[Constraint],
+        trust: TrustPolicy | None,
+        clock: Callable[[], datetime] | None,
+        ledger: TrustLedger | None,
+    ) -> BeliefBase:
         if ledger is None and data.get("ledger"):
             kb = cls(
                 trust=trust,
@@ -1159,6 +1177,13 @@ class BeliefBase:
         kb._baseline.clear()
         kb._hints.clear()
         kb._reasons = dict(data.get("reasons", {}))  # relabeling on load is not a real change
+        missing = sorted({j.rule for j in kb._justifications.values() if j.rule and j.rule not in kb._rules})
+        if missing:
+            warnings.warn(
+                f"the snapshot uses rules that were not passed to load(): {', '.join(missing)}. Beliefs "
+                "derived by them can't be re-derived or replayed by the verifier until you register them.",
+                stacklevel=3,
+            )
         return kb
 
     def _migrate_v1_justification(self, j: Justification) -> Justification:
@@ -1170,8 +1195,9 @@ class BeliefBase:
         return dataclasses.replace(j, confidence=min(1.0, j.confidence / base) if base else j.confidence)
 
     def save(self, path: str | os.PathLike[str]) -> None:
-        """Write a JSON snapshot. Values must be JSON-serializable."""
-        Path(path).write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        """Write a JSON snapshot. Values must be JSON-serializable. The write is atomic: a crash
+        mid-write leaves the previous snapshot intact."""
+        write_atomically(path, json.dumps(self.to_dict(), indent=2))
 
     @classmethod
     def load(cls, path: str | os.PathLike[str], **kwargs: Any) -> BeliefBase:
