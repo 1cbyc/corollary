@@ -64,15 +64,19 @@ class ProofDiff:
     added: tuple[str, ...]
     removed: tuple[str, ...]
     changed: tuple[tuple[str, Any, Any], ...]
+    """``(key, old value, new value)`` for beliefs whose value changed."""
+    status_changed: tuple[tuple[str, Status, Status], ...] = ()
+    """``(key, old status, new status)``, e.g. a step that went ``OUT`` after a retraction."""
 
     @property
     def empty(self) -> bool:
-        return not (self.added or self.removed or self.changed)
+        return not (self.added or self.removed or self.changed or self.status_changed)
 
     def __str__(self) -> str:
         lines = [f"+ {k}" for k in self.added]
         lines += [f"- {k}" for k in self.removed]
         lines += [f"~ {k}: {format_value(a)} -> {format_value(b)}" for k, a, b in self.changed]
+        lines += [f"! {k}: {a.value} -> {b.value}" for k, a, b in self.status_changed]
         return "\n".join(lines) if lines else "(identical)"
 
 
@@ -197,20 +201,20 @@ class Proof:
                 text += f"  {step.justification.describe() if step.justification else step.belief.source}"
             return text
 
-        def walk(ref: str, prefix: str, connector: str, child_prefix: str) -> None:
+        # Depth-first with an explicit stack, so a proof thousands of steps deep can still render.
+        stack: list[tuple[str, str, str, str]] = [(root, "", "", "") for root in reversed(self.roots)]
+        while stack:
+            ref, prefix, connector, child_prefix = stack.pop()
             step = by_ref[ref]
             again = ref in printed
             lines.append(f"{prefix}{connector}{label(step)}{'  (see above)' if again and step.antecedents else ''}")
             if again:
-                return
+                continue
             printed.add(ref)
             children = [a for a in step.antecedents if a in by_ref]
-            for i, child in enumerate(children):
+            for i in reversed(range(len(children))):
                 last = i == len(children) - 1
-                walk(child, prefix + child_prefix, elbow if last else tee, "    " if last else pipe)
-
-        for root in self.roots:
-            walk(root, "", "", "")
+                stack.append((children[i], prefix + child_prefix, elbow if last else tee, "    " if last else pipe))
         return "\n".join(lines)
 
     def __str__(self) -> str:
@@ -221,11 +225,11 @@ class Proof:
         ids = {s.ref: f"n{i}" for i, s in enumerate(self.steps)}
         lines = ["flowchart BT"]
         for s in self.steps:
-            text = f"{s.belief.key} = {format_value(s.belief.value)}".replace('"', "'")
+            text = _mermaid_text(f"{s.belief.key} = {format_value(s.belief.value)}")
             shape = ('(["', '"])') if s.is_premise else ('["', '"]')
             lines.append(f"    {ids[s.ref]}{shape[0]}{text}{shape[1]}")
         for s in self.steps:
-            edge_label = s.justification.describe().replace('"', "'") if s.justification else ""
+            edge_label = _mermaid_text(s.justification.describe()) if s.justification else ""
             for a in s.antecedents:
                 if a in ids:
                     lines.append(f'    {ids[a]} -->|"{edge_label}"| {ids[s.ref]}')
@@ -236,7 +240,7 @@ class Proof:
         ids = {s.ref: f"n{i}" for i, s in enumerate(self.steps)}
         lines = ["digraph proof {", "  rankdir=BT;", "  node [shape=box, fontname=Helvetica];"]
         for s in self.steps:
-            text = f"{s.belief.key} = {format_value(s.belief.value)}".replace('"', '\\"')
+            text = _dot_text(f"{s.belief.key} = {format_value(s.belief.value)}")
             style = ", style=rounded" if s.is_premise else ""
             lines.append(f'  {ids[s.ref]} [label="{text}"{style}];')
         for s in self.steps:
@@ -250,15 +254,21 @@ class Proof:
 
     def diff(self, other: Proof) -> ProofDiff:
         """Compare by key: beliefs present only in ``other`` are ``added``."""
-        mine = {s.belief.key: s.belief.value for s in self.steps}
-        theirs = {s.belief.key: s.belief.value for s in other.steps}
+        mine = {s.belief.key: s for s in self.steps}
+        theirs = {s.belief.key: s for s in other.steps}
         from .belief import values_equal
 
+        both = [k for k in mine if k in theirs]
         return ProofDiff(
             added=tuple(k for k in theirs if k not in mine),
             removed=tuple(k for k in mine if k not in theirs),
             changed=tuple(
-                (k, mine[k], theirs[k]) for k in mine if k in theirs and not values_equal(mine[k], theirs[k])
+                (k, mine[k].belief.value, theirs[k].belief.value)
+                for k in both
+                if not values_equal(mine[k].belief.value, theirs[k].belief.value)
+            ),
+            status_changed=tuple(
+                (k, mine[k].status, theirs[k].status) for k in both if mine[k].status is not theirs[k].status
             ),
         )
 
@@ -278,6 +288,10 @@ class Proof:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Proof:
+        if data.get("format") != "corollary.proof":
+            raise ValueError(f"not a Corollary proof (format {data.get('format')!r})")
+        if not isinstance(data.get("version"), int) or data["version"] > 1:
+            raise ValueError(f"unsupported proof version {data.get('version')!r}; upgrade corollary to read it")
         return cls(
             roots=tuple(data["roots"]),
             steps=tuple(ProofStep.from_dict(s) for s in data["steps"]),
@@ -287,6 +301,16 @@ class Proof:
     @classmethod
     def from_json(cls, text: str) -> Proof:
         return cls.from_dict(json.loads(text))
+
+
+def _mermaid_text(text: str) -> str:
+    """Escape text for a quoted Mermaid label: entity codes survive where raw quotes would not."""
+    return text.replace("#", "#35;").replace('"', "#quot;").replace("\n", " ")
+
+
+def _dot_text(text: str) -> str:
+    """Escape text for a quoted DOT string: backslashes first, then quotes."""
+    return text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
 def _stdout_supports_unicode() -> bool:

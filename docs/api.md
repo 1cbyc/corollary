@@ -186,7 +186,7 @@ callable `(conflict, kb) -> Resolution | None` is a resolver.
 Build with `kb.proof(...)` or `Proof.build(kb, *keys)`. Access: iteration, `len`, `in`, `step(key_or_ref)`,
 `by_ref`, `premises`, `derived`, `valid`. Output: `render(*, show_sources=True, ascii=False)`, `str()`,
 `to_mermaid()`, `to_dot()`, `to_dict()`, `to_json()`, `from_dict()`, `from_json()`. Comparison:
-`diff(other) -> ProofDiff(added, removed, changed)`. Verification: `verify(kb=None, *, checks=None, at=None)`.
+`diff(other) -> ProofDiff(added, removed, changed, status_changed)`. Verification: `verify(kb=None, *, checks=None, at=None)`.
 
 ### `ProofStep(belief, status, confidence, justification)`
 
