@@ -775,10 +775,7 @@ class BeliefBase:
     def conflicts(self) -> list[Conflict]:
         """All open conflicts: keys with incompatible ``IN`` values, and violated constraints."""
         found: list[Conflict] = []
-        for key in self._revisions:
-            nodes = self._in_nodes(key)
-            if len(nodes) < 2 or all(values_equal(nodes[0].belief.value, n.belief.value) for n in nodes[1:]):
-                continue
+        for key, nodes in self._value_conflicts():
             beliefs = tuple(n.belief for n in nodes)
             found.append(
                 Conflict(
@@ -818,7 +815,17 @@ class BeliefBase:
 
     def conflicted_keys(self) -> set[str]:
         """Keys involved in a *value* conflict (constraint conflicts don't block usage)."""
-        return {c.subject for c in self.conflicts() if c.kind is ConflictKind.VALUE}
+        return {key for key, _ in self._value_conflicts()}
+
+    def _value_conflicts(self) -> Iterator[tuple[str, list[_Node]]]:
+        """Keys with incompatible ``IN`` values, and those revisions. Only keys with several
+        revisions can conflict, so the common single-revision key costs one length check."""
+        for key, refs in self._revisions.items():
+            if len(refs) < 2:
+                continue
+            nodes = self._in_nodes(key)
+            if len(nodes) > 1 and any(not values_equal(nodes[0].belief.value, n.belief.value) for n in nodes[1:]):
+                yield key, nodes
 
     def resolve(
         self,
