@@ -558,3 +558,32 @@ def test_auto_named_rules_never_reuse_a_name_a_snapshot_still_uses(kb: BeliefBas
     loaded.register_rule(Rule("scale:4", make(4)))
     loaded.derive("d", make(5), "x")  # skips the explicitly registered name too
     assert loaded.value("d") == 5
+
+
+def test_rollback_restores_justification_order_and_ledger(kb: BeliefBase, monkeypatch: pytest.MonkeyPatch) -> None:
+    kb.assert_("x", 1, source="tool:a")
+    kb.assert_("x", 1, source="human:bob")
+    before = [j.id for j in kb.justifications("x")]
+    support = kb.support("x")
+    ledger_version = kb.ledger.version
+    relabel = kb._relabel
+
+    def broken(seeds: list[str]) -> None:
+        monkeypatch.setattr(kb, "_relabel", relabel)
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(kb, "_relabel", broken)
+    with pytest.raises(RuntimeError):
+        kb.assert_("x", 1, source="tool:a")  # a re-read: replaces tool:a's justification
+    assert [j.id for j in kb.justifications("x")] == before
+    assert kb.support("x") == support
+    monkeypatch.setattr(kb, "_relabel", broken)
+    with pytest.raises(RuntimeError):
+        kb.assert_("x", 1, source="tool:c")  # a confirmation that fails is not credited
+    assert kb.ledger.version == ledger_version
+
+
+def test_a_re_read_is_logged_as_a_renewal(kb: BeliefBase) -> None:
+    kb.assert_("x", 1, source="tool:a")
+    kb.assert_("x", 1, source="tool:a")
+    assert [e.action for e in kb.history][-1] == "renew"

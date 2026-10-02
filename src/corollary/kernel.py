@@ -258,11 +258,11 @@ class BeliefBase:
         # The same source saying the same thing again (a re-read, a refresh) replaces its earlier
         # justification: it is not new evidence, and it must not pile up or count as confirmation.
         repeated = [] if created else [j for j in target.justifications if j.is_premise and j.source == src]
+        positions = [target.justifications.index(j) for j in repeated]
+        confirming = not created and not renewing and not repeated
         if created:
             self._hints[target.ref] = f"asserted by {src}"
         else:
-            if not renewing and not repeated:
-                self._credit_confirmation(target, src)
             self._hints[target.ref] = f"renewed by {src}" if renewing or repeated else f"corroborated by {src}"
         for j in repeated:
             self._unlink(target, j)
@@ -278,18 +278,22 @@ class BeliefBase:
                 created=created,
             )
         except BaseException:
-            for j in repeated:
+            for j, position in zip(repeated, positions, strict=True):
                 self._link(target, j)
+                target.justifications.remove(j)  # back where it was: support is chosen by position
+                target.justifications.insert(position, j)
             for old in superseded:
                 old.retracted, old.retract_reason = False, ""
             self._relabel([target.ref, *(n.ref for n in superseded)] if repeated else [n.ref for n in superseded])
             raise
+        if confirming:  # only once the assertion has stuck
+            self._credit_confirmation(target, src)
         for old in superseded:
             self._log("retract", old.ref, old.retract_reason)
         if created:
             self._log("assert", target.ref, f"= {format_value(value)} by {src}")
         else:
-            self._log("renew" if renewing else "support", target.ref, f"by {src}")
+            self._log("renew" if renewing or repeated else "support", target.ref, f"by {src}")
         return target.belief
 
     def assume(self, key: str, value: Any, *, by: str = "user", **kwargs: Any) -> Belief:
