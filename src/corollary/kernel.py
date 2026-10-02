@@ -18,11 +18,12 @@ retraction scales with what depends on it, not with the size of the belief base.
 from __future__ import annotations
 
 import dataclasses
+import heapq
 import itertools
 import json
 import os
 import warnings
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
@@ -608,17 +609,33 @@ class BeliefBase:
             key: {k for j in n.justifications if j.rederivable for k in j.inputs if k in by_key and k != key}
             for key, n in by_key.items()
         }
-        remaining = sorted(by_key, key=lambda k: (by_key[k].belief.created_at, k))
+
+        def tie_break(key: str) -> tuple[datetime, str]:
+            return by_key[key].belief.created_at, key
+
+        # Kahn's algorithm, always taking the earliest ready candidate: linear in the graph size.
+        users: dict[str, list[str]] = defaultdict(list)
+        for key, needed in deps.items():
+            for dep in needed:
+                users[dep].append(key)
+        waiting = {key: len(needed) for key, needed in deps.items()}
+        ready = [(tie_break(k), k) for k, n in waiting.items() if n == 0]
+        heapq.heapify(ready)
         ordered: list[_Node] = []
         placed: set[str] = set()
-        while remaining:
-            ready = [k for k in remaining if deps[k] <= placed]
-            if not ready:  # a cycle among candidates: keep the remaining ones in tie-break order
-                ready = remaining
-            for k in ready:
-                ordered.append(by_key[k])
-                placed.add(k)
-            remaining = [k for k in remaining if k not in placed]
+        while len(placed) < len(by_key):
+            if not ready:  # a cycle among candidates: release its earliest member
+                key = min((k for k in by_key if k not in placed), key=tie_break)
+                heapq.heappush(ready, (tie_break(key), key))
+            _, key = heapq.heappop(ready)
+            if key in placed:
+                continue
+            placed.add(key)
+            ordered.append(by_key[key])
+            for user in users[key]:
+                waiting[user] -= 1
+                if waiting[user] == 0 and user not in placed:
+                    heapq.heappush(ready, (tie_break(user), user))
         return ordered
 
     def _try_rederive(
@@ -1023,9 +1040,9 @@ class BeliefBase:
         """Beliefs whose justifications use this one (directly, or anywhere downstream)."""
         start = self._resolve(key_or_ref)
         seen: dict[str, None] = {}
-        frontier = [start.ref]
+        frontier = deque([start.ref])
         while frontier:
-            ref = frontier.pop(0)
+            ref = frontier.popleft()
             for nxt in self._successors(ref):
                 if nxt not in seen and nxt != start.ref:
                     seen[nxt] = None
