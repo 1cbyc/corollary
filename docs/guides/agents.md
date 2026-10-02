@@ -107,8 +107,8 @@ def quote(symbol: str) -> float:
 - **`trust`** is a level from the trust policy (`"high"`, `"medium"`, `"low"`) or a number in [0, 1].
 - **`ttl`** sets how long each result stays valid. See [Time and validity](time.md).
 - **Arguments are validated** against the function signature before the call. Arguments annotated
-  `str`, `int`, `float` or `bool` (or `X | None`) are type-checked, and unambiguous values are coerced:
-  `"3"` becomes `3` for an `int`, `"true"` becomes `True` for a `bool`. Unknown tools, bad arguments and
+  `str`, `int`, `float` or `bool` (or `X | None`) are type-checked when the model supplies them, and
+  unambiguous values are coerced: `"3"` becomes `3` for an `int`, `"true"` or `1` becomes `True` for a `bool`. Unknown tools, bad arguments and
   exceptions raised by the tool are rejected and reported to the model.
 - **`async def` tools work too.** The runtime runs them to completion, on a worker thread with its own
   event loop if it is itself called from inside one.

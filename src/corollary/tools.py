@@ -71,22 +71,22 @@ class Tool:
             bound = self.signature.bind(**dict(args))
         except TypeError as exc:
             raise ContractViolation(f"invalid arguments for tool {self.name!r}: {exc}") from None
-        bound.apply_defaults()
         hints = _type_hints(self.fn)
-        arguments = dict(bound.arguments)
-        for name, value in arguments.items():
+        # Only what the model supplied is checked: defaults come from the tool itself.
+        for name, value in list(bound.arguments.items()):
             if name in hints and self.signature.parameters[name].kind not in (
                 inspect.Parameter.VAR_POSITIONAL,
                 inspect.Parameter.VAR_KEYWORD,
             ):
                 try:
-                    arguments[name] = _coerce(value, hints[name])
-                except (TypeError, ValueError):
+                    bound.arguments[name] = _coerce(value, hints[name])
+                except (TypeError, ValueError, ArithmeticError):
                     expected = _type_name(hints[name])
                     raise ContractViolation(
                         f"invalid arguments for tool {self.name!r}: {name!r} must be {expected}, got {value!r}"
                     ) from None
-        return arguments
+        bound.apply_defaults()
+        return dict(bound.arguments)
 
     def invoke(self, args: Mapping[str, Any]) -> Any:
         """Call the function with arguments from :meth:`bind`. An ``async`` tool is run to completion
@@ -192,6 +192,8 @@ def _coerce(value: Any, annotation: Any) -> Any:
     if annotation is bool:
         if isinstance(value, bool):
             return value
+        if isinstance(value, int) and value in (0, 1):  # models often send flags as 0 and 1
+            return bool(value)
         if isinstance(value, str) and value.strip().lower() in _TRUE | _FALSE:
             return value.strip().lower() in _TRUE
         raise TypeError
@@ -209,7 +211,7 @@ def _coerce(value: Any, annotation: Any) -> Any:
         if isinstance(value, bool):
             raise TypeError
         if isinstance(value, (int, float)):
-            return float(value)
+            return value  # an int is a fine float, and keeps result keys like "scale:2" stable
         if isinstance(value, str):
             return float(value.strip())
         raise TypeError

@@ -95,7 +95,9 @@ def scaled(n: int, factor: float = 1.0, exact: bool = False, label: str = "", li
     ("args", "expected"),
     [
         ({"n": "3"}, {"n": 3, "factor": 1.0}),
-        ({"n": 3.0, "factor": 2}, {"n": 3, "factor": 2.0}),
+        ({"n": 3.0, "factor": 2.5}, {"n": 3, "factor": 2.5}),
+        ({"n": 1, "factor": "2"}, {"factor": 2.0}),
+        ({"n": 1, "exact": 1}, {"exact": True}),
         ({"n": 1, "exact": "true", "label": 2024}, {"exact": True, "label": "2024"}),
         ({"n": 1, "limit": None}, {"limit": None}),
         ({"n": 1, "limit": "5"}, {"limit": 5}),
@@ -145,3 +147,16 @@ def test_trust_policy_keeps_defaults_for_kinds_left_out() -> None:
     assert policy.confidence_for("tool:x") == 0.8
     assert policy.confidence_for("human:alice") == 0.99
     assert policy.tool_confidence("high") == 0.99 and policy.tool_confidence("paranoid") == 0.5
+
+
+def test_bind_checks_only_what_the_model_supplied() -> None:
+    @tool
+    def search(q: str, limit: int = None) -> list[str]:  # type: ignore[assignment]  # noqa: RUF013 (users write this)
+        return []
+
+    assert search.bind({"q": "a"}) == {"q": "a", "limit": None}
+    assert scaled.bind({"n": 1, "factor": 2})["factor"] == 2  # ints stay ints: keys stay "scaled:1,2"
+
+
+def test_bind_never_overflows_on_huge_numbers() -> None:
+    assert scaled.bind({"n": 1, "factor": 10**400})["factor"] == 10**400  # the tool decides what to do
