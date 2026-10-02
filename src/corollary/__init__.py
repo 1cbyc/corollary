@@ -8,6 +8,8 @@ The most used names are importable from the package root::
     from corollary import Agent, BeliefBase, rule, tool
 """
 
+import logging
+
 from ._version import __version__
 from .agent import Agent, Dependencies, NarrowResult, Report, StepRecord
 from .belief import Belief, Source, SourceKind, Status
@@ -112,3 +114,6 @@ __all__ = [
     "rule",
     "tool",
 ]
+
+# A library never configures logging; applications opt in with logging.getLogger("corollary").
+logging.getLogger(__name__).addHandler(logging.NullHandler())

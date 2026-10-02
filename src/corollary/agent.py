@@ -14,6 +14,7 @@ claim contract, and every action is validated before the belief base changes:
 from __future__ import annotations
 
 import enum
+import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -36,6 +37,8 @@ from .trust import TrustPolicy
 from .verify import Check, VerificationReport
 
 _ANSWER_NOTE = "Answer the task: "
+
+log = logging.getLogger(__name__)
 
 
 class Dependencies(str, enum.Enum):
@@ -234,9 +237,11 @@ class Agent:
             try:
                 response = self.model.complete(self.system_prompt, projection.text)
             except ModelError as exc:
+                log.warning("model %s failed on step %d of %r: %s", self.model.name, index, task, exc)
                 steps.append(StepRecord(index, projection.text, "", (), (f"model error: {exc}",)))
                 return Report(task, key, self.kb, False, tuple(steps), tuple(self.kb.changes()), error=exc)
             accepted, rejected, answered = self._process(response, projection, key, task)
+            log.debug("step %d: accepted %s, rejected %s", index, accepted, rejected)
             steps.append(StepRecord(index, projection.text, response, tuple(accepted), tuple(rejected)))
             if answered:
                 return Report(task, key, self.kb, True, tuple(steps), tuple(self.kb.changes()))
@@ -320,6 +325,7 @@ class Agent:
         try:
             value = t.invoke(args)
         except Exception as exc:
+            log.warning("tool %r raised for arguments %r", t.name, args, exc_info=True)
             raise ContractViolation(f"tool {t.name!r} raised {type(exc).__name__}: {exc}") from exc
         belief = self._record_tool_result(t, args, key, value, action.claim)
         state.tool_keys.add(key)
@@ -503,7 +509,9 @@ class Agent:
             try:
                 value = t.invoke(args)
             except Exception:
-                continue  # Stays stale; the next reverify() will try again.
+                # Stays stale; the next reverify() will try again.
+                log.warning("re-running tool %r for %s failed", t.name, belief.ref, exc_info=True)
+                continue
             self._record_tool_result(t, args, belief.key, value, belief.claim)
         return self.repair(include_kept=include_kept)
 

@@ -580,3 +580,11 @@ def test_instructions_reach_every_prompt() -> None:
     agent.repair()
     assert "Answer in Portuguese." in model.calls[2].prompt  # re-derivations follow them too
     assert "Be brief." not in model.calls[2].prompt  # run instructions were for that run only
+
+
+def test_tool_failures_are_logged_with_their_traceback(caplog: pytest.LogCaptureFixture) -> None:
+    agent, _ = make_agent(actions({"type": "call_tool", "tool": "get_revenue", "args": {"quarter": "Q7"}}), ANALYZE)
+    with caplog.at_level("WARNING", logger="corollary"):
+        agent.run("t")
+    (record,) = [r for r in caplog.records if "get_revenue" in r.getMessage()]
+    assert record.name == "corollary.agent" and record.exc_info is not None

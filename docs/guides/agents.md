@@ -77,6 +77,19 @@ report.steps  # StepRecord(index, prompt, response, accepted, rejected) per mode
 `report.steps` is how you debug an agent: each record holds the exact prompt the model saw and its raw
 response.
 
+### Logging
+
+The agent logs to the `corollary` logger and configures no handlers. Warnings cover model failures, tools
+that raise (with the traceback, which the model never sees) and tools that fail during `reverify()`.
+Each step's accepted and rejected actions are logged at `DEBUG`.
+
+```python
+import logging
+
+logging.basicConfig()
+logging.getLogger("corollary").setLevel(logging.DEBUG)
+```
+
 ## Tools
 
 ```python
