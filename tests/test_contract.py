@@ -81,6 +81,25 @@ def test_extract_json_prefers_whole_text() -> None:
     assert extract_json('{"a": {"b": 1}}') == {"a": {"b": 1}}
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        'Values: [4.3, 4.5]\n{"actions": [{"type": "answer", "text": "x"}]}',
+        'Args will be {"q": "Q2"}. {"actions": [{"type": "answer", "text": "x"}]}',
+        "{'actions': [{'type': 'answer', 'text': 'x', 'follows_from': None}]}",
+        '```json\n[1, 2]\n```\n```json\n{"actions": [{"type": "answer", "text": "x"}]}\n```',
+    ],
+)
+def test_extract_json_prefers_the_response_shaped_value(text: str) -> None:
+    (action,) = parse_response(text).actions
+    assert action == Answer("x")
+
+
+def test_invalid_json_error_says_where() -> None:
+    with pytest.raises(ContractViolation, match=r"not valid JSON \(.+ at line 1, column 2\)"):
+        parse_response("{actions: []}")
+
+
 def test_schema_shape() -> None:
     item = CONTRACT_SCHEMA["properties"]["actions"]["items"]
     assert item["properties"]["type"]["enum"] == ["call_tool", "cite", "claim", "answer"]

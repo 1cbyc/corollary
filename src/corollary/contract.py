@@ -9,6 +9,7 @@ and are ``IN``, formulas reproduce values, quotes appear in documents) before ac
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from collections.abc import Mapping
@@ -138,23 +139,81 @@ _FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
 def extract_json(text: str) -> Any:
-    """Find the JSON payload in a model response (bare, fenced, or embedded in prose)."""
+    """Find the JSON payload in a model response (bare, fenced, or embedded in prose).
+
+    A response may contain several JSON values, for example a list of numbers in a sentence
+    before the actions. The first value shaped like a response wins: an object with ``actions``,
+    then a single action object, then a list of action objects. Python-style literals (single
+    quotes, ``True``, ``None``) are accepted as a last resort.
+    """
     stripped = text.strip()
-    candidates = [stripped]
-    candidates += [m.group(1).strip() for m in _FENCE.finditer(text)]
-    for candidate in candidates:
+    blocks = [stripped, *(m.group(1).strip() for m in _FENCE.finditer(text))]
+    found: list[Any] = []
+    error: json.JSONDecodeError | None = None
+    for block in blocks:
         try:
-            return json.loads(candidate)
-        except (json.JSONDecodeError, ValueError):
-            pass
+            found.append(json.loads(block))
+        except json.JSONDecodeError as exc:
+            error = error or exc
+    whole_block_decoded = bool(found)
+    if not any(_shape(p) < _NOT_A_RESPONSE for p in found):
+        found += _embedded_json(text)
+    if not any(_shape(p) < _NOT_A_RESPONSE for p in found):
+        found += _python_literals(blocks)
+    if not any(_shape(p) < _NOT_A_RESPONSE for p in found) and not whole_block_decoded:
+        # Only fragments decoded (say, the "[]" inside a malformed object): the parse error of the
+        # response itself tells the model more than "each action must be a JSON object" would.
+        found = []
+    if not found:
+        detail = f" ({error.msg} at line {error.lineno}, column {error.colno})" if error else ""
+        raise ContractViolation(
+            f'response is not valid JSON{detail}; reply with a single JSON object {{"actions": [...]}}'
+        )
+    return min(found, key=_shape)  # min() keeps the first of equally shaped candidates
+
+
+_NOT_A_RESPONSE = 3
+
+
+def _shape(payload: Any) -> int:
+    """How much ``payload`` looks like a contract response; lower is better."""
+    if isinstance(payload, dict):
+        return 0 if "actions" in payload else 1 if "type" in payload else _NOT_A_RESPONSE
+    if isinstance(payload, list) and payload and all(isinstance(item, dict) for item in payload):
+        return 2
+    return _NOT_A_RESPONSE
+
+
+def _embedded_json(text: str) -> list[Any]:
     decoder = json.JSONDecoder()
-    for start in (i for i, ch in enumerate(text) if ch in "{["):
+    found: list[Any] = []
+    position = 0
+    while (start := _next_bracket(text, position)) != -1:
         try:
-            payload, _ = decoder.raw_decode(text, start)
-            return payload
+            payload, end = decoder.raw_decode(text, start)
         except json.JSONDecodeError:
+            position = start + 1
             continue
-    raise ContractViolation('response is not valid JSON; reply with a single JSON object {"actions": [...]}')
+        found.append(payload)
+        position = end  # Skip the inside of a decoded value, so its parts aren't candidates too.
+    return found
+
+
+def _next_bracket(text: str, position: int) -> int:
+    hits = [i for i in (text.find("{", position), text.find("[", position)) if i != -1]
+    return min(hits, default=-1)
+
+
+def _python_literals(blocks: list[str]) -> list[Any]:
+    found: list[Any] = []
+    for block in blocks:
+        try:
+            payload = ast.literal_eval(block)
+        except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+            continue
+        if _shape(payload) < _NOT_A_RESPONSE:
+            found.append(payload)
+    return found
 
 
 def parse_response(text: str) -> ParsedResponse:
