@@ -154,3 +154,23 @@ def test_numeric_provenance_accepts_identifiers_and_names(kb: BeliefBase) -> Non
     )
     report = kb.proof("answer").verify(kb, checks=[NumericProvenanceCheck()])
     assert [w.message for w in report.warnings] == ["states 2500, which does not follow from its antecedents"]
+
+
+def test_numeric_provenance_does_not_let_a_claim_vouch_for_itself(kb: BeliefBase) -> None:
+    kb.assert_("revenue", 4.3e9, source="tool:oms")
+    kb.justify("growth", 17.4, antecedents=["revenue"], source="model:m", claim="Growth was 17.4%.")
+    report = kb.proof("growth").verify(kb, checks=[NumericProvenanceCheck()])
+    assert [w.message for w in report.warnings] == ["states 17.4, which does not follow from its antecedents"]
+
+
+def test_numeric_provenance_ignores_dates_and_times(kb: BeliefBase) -> None:
+    kb.assert_("revenue", 4.3e9, source="tool:oms")
+    kb.justify(
+        "summary",
+        "ok",
+        antecedents=["revenue"],
+        source="model:m",
+        claim="As of 2026-03-25 at 10:45, revenue was $4.3 billion.",
+    )
+    report = kb.proof("summary").verify(kb, checks=[NumericProvenanceCheck()])
+    assert report.warnings == []

@@ -32,9 +32,10 @@ kb.cite(
 1. **The quote appears in the document.** Matching ignores case, collapses whitespace and normalizes curly
    quotes and dashes. Otherwise it is exact: no paraphrases.
 2. **The value is stated in the quote** (pass `check_value=False` to skip). Strings must appear in the
-   quote. Numbers must match a number in the quote after rounding to its stated precision, at common scales
-   (units, thousands, millions, billions, trillions, and percent). So `4.3e9` matches "$4.3 billion" and
-   `0.0976` matches "9.76%".
+   quote as a whole word or phrase. Numbers must match a number in the quote after rounding to its stated
+   precision, at the scale its unit states: `4.3e9` matches "$4.3 billion", "$4.3B" and "4,300 million",
+   and `0.0976` matches "9.76%", but `4.3e9` does not match "$4 million". A number without a unit may be
+   in any magnitude (thousands to trillions), because tables often state their unit in a header.
 
 The second check is what stops a model from citing a real sentence while extracting a number that isn't
 in it.

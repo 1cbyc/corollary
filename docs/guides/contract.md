@@ -47,7 +47,7 @@ The runtime executes the tool. Its return value becomes a **premise** with sourc
 | `claim` | no | Natural-language description |
 
 The quote must appear in the document (case- and whitespace-insensitive), and a numeric or string value
-must be stated in the quote. Numbers match across common scales, so `4.3 billion` states `4300000000`.
+must be stated in the quote. Numbers match at the scale their unit states, so `4.3 billion` states `4300000000`.
 See [Documents and citations](documents.md).
 
 ### `claim`

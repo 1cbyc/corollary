@@ -23,7 +23,7 @@ from .formula import evaluate
 from .justification import JustificationKind
 from .proof import Proof, ProofStep
 from .rules import Rule
-from .textmatch import contains_quote, number_matches, numbers_in, value_in_text
+from .textmatch import contains_quote, figure_matches, figures_in, numbers_in, value_in_text
 
 if TYPE_CHECKING:
     from .kernel import BeliefBase
@@ -299,8 +299,9 @@ class NumericProvenanceCheck:
     """Warns when a model-written claim states a number found nowhere in its support.
 
     This catches the model filling in a figure from its training data instead of from a belief.
-    Numbers are matched with rounding and common scales (so "4.1 billion" and "9.76%" match).
-    Small integers and years are ignored to keep the check quiet on ordinary prose.
+    Numbers are matched with rounding, at the scale their unit states ("4.1 billion", "$4.1B" and
+    "9.76%" match; "$4 million" does not match 4.3e9). Small integers, years, dates, times and
+    ordinals are ignored to keep the check quiet on ordinary prose.
     """
 
     name = "provenance"
@@ -325,10 +326,10 @@ class NumericProvenanceCheck:
             if not text:
                 continue
             antecedents = _antecedent_steps(step, by_ref)
-            candidates: list[float] = []
-            for value in [step.belief.value, *(s.belief.value for s in antecedents)]:
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    candidates.append(float(value))
+            # The step's own value counts only when a formula computed it; otherwise the model chose
+            # it, and a claim restating a number the model made up would vouch for itself.
+            values = [s.belief.value for s in antecedents] + ([step.belief.value] if j.formula else [])
+            candidates = [float(v) for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
             # Numbers also count as supported when they appear in an antecedent's claim, key or text
             # value: identifiers ("order:1043:status") and names ("iPhone 15") aren't figures.
             context_text = [step.belief.key]
@@ -336,11 +337,12 @@ class NumericProvenanceCheck:
                 context_text += [s.belief.claim, s.belief.key]
                 if isinstance(s.belief.value, str):
                     context_text.append(s.belief.value)
-            context_numbers = [n for text_part in context_text for n, _ in numbers_in(text_part)]
-            for number, decimals in numbers_in(str(text)):
-                if self._ignored(number, decimals):
+            context_numbers = {n for text_part in context_text for n, _ in numbers_in(text_part)}
+            for figure in figures_in(str(text), skip_dates=True):
+                number = figure.value
+                if self._ignored(number, figure.decimals):
                     continue
-                if number_matches(number, decimals, candidates) or number in context_numbers:
+                if figure_matches(figure, candidates) or number in context_numbers:
                     continue
                 failures.append(
                     CheckResult(

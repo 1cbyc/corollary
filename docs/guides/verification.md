@@ -70,9 +70,10 @@ All checks live in `corollary.verify`. `ArithmeticCheck(rel_tol=1e-6)` and
 
 The projector controls what a model *sees*, but not what it already *knows*. A model can still write a
 figure from its training data into a claim. `NumericProvenanceCheck` catches the visible part of that:
-every number in a model-written claim must match its own value or one of its antecedents' values, after
-rounding and at common scales (`4.1 billion`, `9.76%`). Small integers and years are ignored to keep it
-quiet on ordinary prose. It warns rather than fails, because prose legitimately contains numbers.
+every number in a model-written claim must match one of its antecedents' values (or its own value, when a
+formula computed it), after rounding and at the scale its unit states (`4.1 billion`, `$4.1B`, `9.76%`).
+Small integers, years, dates, times and ordinals are ignored to keep it quiet on ordinary prose. It warns
+rather than fails, because prose legitimately contains numbers.
 
 ## The report
 
