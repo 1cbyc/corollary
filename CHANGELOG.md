@@ -20,7 +20,10 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 
 - Citation and provenance checks match a number at the scale its unit states: "$4 million" no longer
-  matches 4.3e9, and "4 percent" no longer matches 4.1e9. A bare number may still be any magnitude.
+  matches 4.3e9, and "4 percent" no longer matches 4.1e9. A value stored in a smaller unit still matches
+  (4300, in millions, for "$4.3 billion"), and a bare number may still be any magnitude or a percentage.
+- String and boolean values in citations must appear as a whole word or phrase ("false" is not in
+  "falsehood"); a numeric string is matched as a number.
 - The provenance check no longer counts a model claim's own value as support (unless a formula computed
   it), and ignores dates, times and ordinals.
 - `TrustPolicy(sources=...)` and `tool_levels=` are merged with the defaults instead of replacing them.

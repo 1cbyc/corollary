@@ -47,8 +47,18 @@ def test_numbers_in() -> None:
         (4.3e9, "revenue was $4.3B", True),
         (4.3e9, "4,300 million", True),
         (9.76, "grew 9.76%", True),
-        # Without a unit, a table header may scale the number ("in millions").
+        # Without a unit, a table header may scale the number ("in millions", "(%)").
         (4.3e9, "Revenue 4,300", True),
+        (0.125, "Margin (%): 12.5", True),
+        # Other percent spellings, and values stored in a smaller unit than the text uses.
+        (0.0976, "up 9.76 percentage points", True),
+        (0.0976, "(9.76)%", True),
+        (0.0976, "9.76pp", True),
+        (4300, "revenue of $4.3 billion", True),
+        (4.3e12, "revenue of $4.3 billion", False),
+        # A numeric string is matched as a number.
+        ("4.3", "$4.3bn", True),
+        ("order 1043", "order 10432", False),
         (5, ".5", False),
         (-2.5, "fell by −2.5", True),
         (False, "a falsehood", False),
@@ -61,7 +71,7 @@ def test_value_in_text(value: object, text: str, expected: bool) -> None:
 
 def test_figures_carry_the_scales_their_unit_allows() -> None:
     assert figures_in("$4.1B, 9.76 percent, 12 k, .5 and 7") == [
-        Figure(4.1, 1, (1.0, 1e-9)),
+        Figure(4.1, 1, (1.0, 1e-3, 1e-6, 1e-9)),
         Figure(9.76, 2, (1.0, 100.0)),
         Figure(12.0, 0, (1.0, 1e-3)),
         Figure(0.5, 1),

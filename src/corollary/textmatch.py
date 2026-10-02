@@ -13,14 +13,12 @@ _WS = re.compile(r"\s+")
 _NUMBER = re.compile(r"(?<![\w.])[-+]?(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+)(?:[eE][-+]?\d+)?")
 # A unit right after a number says how the number is scaled: "4.1 billion", "$4.1B", "9.76%".
 _UNIT = re.compile(
-    r"\s?(%|per\s?cent\b|pct\b|thousand\b|k\b|million\b|mn\b|mm\b|m\b|billion\b|bn\b|b\b|trillion\b|tn\b|t\b)",
+    r"[)\]]?\s?(%|percentage(?:\s?points?)?\b|per[\s-]?cent\b|pct\b|pp\b|pts\b"
+    r"|thousand\b|k\b|million\b|mn\b|mm\b|m\b|billion\b|bn\b|b\b|trillion\b|tn\b|t\b)",
     re.IGNORECASE,
 )
+_PERCENT = re.compile(r"%|percent|per[\s-]?cent|pct|pp|pts", re.IGNORECASE)
 _UNIT_SCALES: dict[str, float] = {
-    "%": 100.0,
-    "percent": 100.0,
-    "per cent": 100.0,
-    "pct": 100.0,
     "thousand": 1e-3,
     "k": 1e-3,
     "million": 1e-6,
@@ -34,10 +32,11 @@ _UNIT_SCALES: dict[str, float] = {
     "tn": 1e-12,
     "t": 1e-12,
 }
-# Without a unit, a number may still be scaled by a table header ("in millions"), so magnitudes are
-# allowed; a percentage needs a percent sign or word.
-_BARE_SCALES = (1.0, 1e-3, 1e-6, 1e-9, 1e-12)
-_SCALES = (*_BARE_SCALES, 100.0)
+_MAGNITUDES = (1.0, 1e-3, 1e-6, 1e-9, 1e-12)
+# Without a unit, a number may still be scaled by a table header ("in millions", "(%)"), so every
+# magnitude and percent are allowed.
+_BARE_SCALES = (*_MAGNITUDES, 100.0)
+_SCALES = _BARE_SCALES
 # Dates, times and ordinals contain digits that aren't figures: "2026-03-25", "10:45", "15th".
 _NOT_FIGURES = re.compile(
     r"\b\d{4}-\d{1,2}-\d{1,2}(?:[T ]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?\b"
@@ -89,11 +88,19 @@ def figures_in(text: str, *, skip_dates: bool = False) -> list[Figure]:
         decimals = len(mantissa.split(".")[1]) if "." in mantissa else 0
         unit = _UNIT.match(text, match.end())
         if unit is not None:
-            name = _WS.sub(" ", unit.group(1).lower())
-            found.append(Figure(value, decimals, (1.0, _UNIT_SCALES[name])))
+            found.append(Figure(value, decimals, _unit_scales(unit.group(1))))
         else:
             found.append(Figure(value, decimals))
     return found
+
+
+def _unit_scales(unit: str) -> tuple[float, ...]:
+    """Scales a figure with this unit may be stated at. "4.3 billion" states 4.3e9 in base units, or
+    4,300 stored in millions, or 4,300,000 in thousands, but never 4.3e12 or 4.3e6."""
+    if _PERCENT.fullmatch(unit) or unit.lower().startswith("percent"):
+        return (1.0, 100.0)
+    scale = _UNIT_SCALES[unit.lower()]
+    return tuple(s for s in _MAGNITUDES if s >= scale)
 
 
 def numbers_in(text: str) -> list[tuple[float, int]]:
@@ -130,8 +137,18 @@ def value_in_text(value: Any, text: str) -> bool:
     if isinstance(value, (int, float)):
         return any(figure_matches(f, [float(value)]) for f in figures_in(text))
     if isinstance(value, str):
-        return _contains_phrase(text, value)
+        if _contains_phrase(text, value):
+            return True
+        number = _as_number(value)  # "4.3" is stated by "$4.3bn" as much as 4.3 is
+        return number is not None and any(figure_matches(f, [number]) for f in figures_in(text))
     return False
+
+
+def _as_number(text: str) -> float | None:
+    figures = figures_in(text)
+    if len(figures) != 1 or not _NUMBER.fullmatch(text.strip().lstrip("$€£").replace(" ", "")):
+        return None
+    return figures[0].value
 
 
 def _contains_phrase(text: str, phrase: str) -> bool:
