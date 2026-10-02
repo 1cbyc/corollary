@@ -236,8 +236,21 @@ def parse_response(text: str) -> ParsedResponse:
         try:
             actions.append(parse_action(item))
         except ContractViolation as exc:
-            errors.extend(f"action {i + 1}: {e}" for e in exc.errors)
+            # The model never sees its previous response, so say which action this was.
+            errors.extend(f"action {i + 1}{_label(item)}: {e}" for e in exc.errors)
     return ParsedResponse(tuple(actions), tuple(errors))
+
+
+def _label(item: Any) -> str:
+    """A short reminder of what an action was, e.g. ``(claim, key 'growth')``."""
+    if not isinstance(item, dict):
+        return ""
+    parts = [str(item["type"])] if isinstance(item.get("type"), str) else []
+    for name in ("tool", "key", "document"):
+        value = item.get(name)
+        if isinstance(value, str) and value:
+            parts.append(f"{name} {value[:60]!r}")
+    return f" ({', '.join(parts)})" if parts else ""
 
 
 def parse_action(item: Any) -> Action:

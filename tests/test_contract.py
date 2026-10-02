@@ -68,7 +68,7 @@ def test_per_action_errors(action: str, message: str) -> None:
     parsed = parse_response('{"actions": [' + action + ', {"type": "answer", "text": "ok"}]}')
     assert parsed.actions == (Answer("ok"),)
     assert len(parsed.errors) >= 1 and message in parsed.errors[0]
-    assert parsed.errors[0].startswith("action 1:")
+    assert parsed.errors[0].startswith("action 1")
 
 
 @pytest.mark.parametrize("text", ["no json here", '{"foo": 1}', '{"actions": 5}', "42"])
@@ -104,3 +104,8 @@ def test_schema_shape() -> None:
     item = CONTRACT_SCHEMA["properties"]["actions"]["items"]
     assert item["properties"]["type"]["enum"] == ["call_tool", "cite", "claim", "answer"]
     assert item["additionalProperties"] is False
+
+
+def test_per_action_errors_say_which_action() -> None:
+    parsed = parse_response('{"actions": [{"type": "claim", "key": "growth", "follows_from": [1]}]}')
+    assert parsed.errors[0].startswith("action 1 (claim, key 'growth'): ")
