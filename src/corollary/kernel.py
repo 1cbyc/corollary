@@ -296,7 +296,11 @@ class BeliefBase:
         return self.assert_(key, value, source=Source.assumption(by), **kwargs)
 
     def add_document(self, name: str, text: str) -> None:
-        """Register a document so beliefs can cite it and the verifier can check those citations."""
+        """Register a document so beliefs can cite it and the verifier can check those citations.
+
+        Registering a name again replaces its text. Beliefs cited from the old text are not
+        retracted; the verifier re-checks their quotes against the new text.
+        """
         if not name:
             raise ValueError("document name must not be empty")
         self._documents[name] = text

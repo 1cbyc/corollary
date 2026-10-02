@@ -152,6 +152,12 @@ have used anything else, so this is sound by construction: **a retracted fact ca
 conclusion**. The cost is over-retraction. Retracting any visible belief invalidates the claim, even one
 the model ignored.
 
+Documents are the one exception: they are shown to the model, but they are not beliefs, so a claim
+depends on a document only through a `cite`. The system prompt tells the model to cite what it takes from
+a document, and the verifier flags numbers that trace to nothing. Still, if you replace a document's text
+with `add_document`, nothing that read the old text is invalidated automatically: run the tasks that used
+it again, and run `report.verify()`, which re-checks every citation against the current text.
+
 **`"declared"`.** A claim depends on the keys it lists in `follows_from`, plus any keys in its formula.
 Cascades are sharper, but you are trusting the model's account of what it used.
 
