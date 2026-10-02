@@ -51,7 +51,9 @@ Each step of `agent.run(task)`:
 5. **Feed back.** Rejections are shown to the model on the next step.
 
 The run ends at the first accepted answer, or when `max_steps` is reached (`report.completed` is then
-`False`).
+`False`). If the model fails (a refusal, a truncated response, an API error), the run stops and
+`report.error` holds the `ModelError`. Tool results and claims accepted before that stay in the belief
+base, so running the task again continues from them.
 
 ## The report
 
@@ -62,6 +64,7 @@ repaired answer.
 report.answer  # the believed answer text, or None
 report.belief  # the answer's Belief
 report.completed  # did the model answer within the step budget?
+report.error  # the ModelError that ended the run early, if any
 report.stale  # answered, but the answer has since lost its support
 report.proof  # the graph of beliefs the answer follows from
 report.verify()  # deterministic checks; verify(raise_on_error=True) raises on failure

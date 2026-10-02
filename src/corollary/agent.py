@@ -75,6 +75,9 @@ class Report:
     steps: tuple[StepRecord, ...] = ()
     changes: tuple[Change, ...] = ()
     """Everything that became ``IN`` or ``OUT`` during the run."""
+    error: ModelError | None = None
+    """The model error that ended the run early (a refusal, a truncated response, an API failure).
+    Everything the run established before it stays in the belief base and in ``steps``."""
 
     @property
     def belief(self) -> Belief | None:
@@ -212,7 +215,11 @@ class Agent:
             if self.resolver is not None:
                 self.kb.resolve_conflicts(self.resolver)
             projection = self.projector.project(self.kb, task=task, tools=list(self.tools.values()), feedback=feedback)
-            response = self.model.complete(self.system_prompt, projection.text)
+            try:
+                response = self.model.complete(self.system_prompt, projection.text)
+            except ModelError as exc:
+                steps.append(StepRecord(index, projection.text, "", (), (f"model error: {exc}",)))
+                return Report(task, key, self.kb, False, tuple(steps), tuple(self.kb.changes()), error=exc)
             accepted, rejected, answered = self._process(response, projection, key, task)
             steps.append(StepRecord(index, projection.text, response, tuple(accepted), tuple(rejected)))
             if answered:

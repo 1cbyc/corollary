@@ -11,6 +11,7 @@ from corollary import (
     CorollaryError,
     Dependencies,
     JustificationKind,
+    ModelError,
     PreferSource,
     ScriptedModel,
     Status,
@@ -140,6 +141,16 @@ def test_invalid_actions_are_rejected_and_fed_back(bad: dict[str, Any], message:
     assert any(message in r for r in report.rejections), report.rejections
     assert "# Runtime feedback" in model.calls[2].prompt
     assert message in model.calls[2].prompt
+
+
+def test_model_error_ends_the_run_but_keeps_the_report() -> None:
+    agent, _ = make_agent(FETCH)  # the scripted model has nothing to say on step 2
+    report = agent.run("t")
+    assert not report.completed and report.answer is None
+    assert isinstance(report.error, ModelError) and "no responses left" in str(report.error)
+    assert len(report.steps) == 2 and report.steps[0].accepted
+    assert report.rejections == ["model error: ScriptedModel has no responses left"]
+    assert agent.kb.value("revenue:Q2") == 4.3e9
 
 
 def test_claim_cannot_use_a_tool_result_from_the_same_turn() -> None:
