@@ -109,8 +109,12 @@ Security issues should **not** be reported publicly. See [SECURITY.md](SECURITY.
 
 1. Update the version in `src/corollary/_version.py` and move the **Unreleased** changelog entries under the
    new version heading.
-2. Merge to `main`, then create a GitHub release with a `vX.Y.Z` tag.
-3. The `Release` workflow builds the distribution and publishes it to PyPI through trusted publishing.
+2. Optionally, do a dry run: **Actions → Release → Run workflow** publishes to
+   [TestPyPI](https://test.pypi.org/p/corollary).
+3. Merge to `main`, then create a GitHub release with a `vX.Y.Z` tag matching the version (`v0.1.0a1`
+   for `0.1.0a1`). Mark alpha, beta and release-candidate versions as a pre-release.
+4. The `Release` workflow runs the tests, checks that the tag matches the version, builds the
+   distribution, publishes it to PyPI through trusted publishing and attaches it to the GitHub release.
 
 ## License
 

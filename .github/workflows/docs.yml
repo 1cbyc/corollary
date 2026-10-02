@@ -2,6 +2,8 @@ name: Docs
 
 # Builds the MkDocs site from docs/ and publishes it to GitHub Pages on every push to main.
 # One-time setup: Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
+# GitHub's free plan has no Pages for private repositories, so while the repository is private the
+# site is only built (which still catches broken links and references) and the deploy is skipped.
 
 on:
   push:
@@ -35,6 +37,7 @@ jobs:
 
   deploy:
     needs: build
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-latest
     environment:
       name: github-pages

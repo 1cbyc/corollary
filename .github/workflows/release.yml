@@ -1,24 +1,61 @@
 name: Release
 
-# Publishes to PyPI when a GitHub release is published, using PyPI trusted publishing
-# (no API token stored in the repository). Configure the "pypi" environment and the trusted
-# publisher on PyPI before the first release.
+# Publishes Corollary to PyPI when a GitHub release is published. Uses PyPI trusted publishing, so no
+# API token is stored in the repository.
+#
+#   - Publish a GitHub release tagged vX.Y.Z (matching src/corollary/_version.py) -> PyPI.
+#   - Run this workflow manually (Actions -> Release -> Run workflow) -> TestPyPI, as a dry run.
+#
+# One-time setup on pypi.org (and test.pypi.org for dry runs): Account -> Publishing -> add a trusted
+# publisher with owner "gabe-santana", repository "corollary", workflow "release.yml" and environment
+# "pypi" (or "testpypi").
 
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  build:
+  test:
+    name: Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: mypy
+      - run: pytest
+
+  build:
+    name: Build distribution
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check that the release tag matches the package version
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION=$(python -c "import re, pathlib; print(re.search(r'\"(.+)\"', pathlib.Path('src/corollary/_version.py').read_text()).group(1))")
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::Release tag $TAG does not match the package version v$VERSION (src/corollary/_version.py)."
+            exit 1
+          fi
       - run: pip install build twine
       - run: python -m build
       - run: twine check --strict dist/*
@@ -27,7 +64,9 @@ jobs:
           name: dist
           path: dist/
 
-  publish:
+  publish-pypi:
+    name: Publish to PyPI
+    if: github.event_name == 'release'
     needs: build
     runs-on: ubuntu-latest
     environment:
@@ -41,3 +80,40 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  attach-assets:
+    name: Attach distribution to the GitHub release
+    if: github.event_name == 'release'
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+
+  publish-testpypi:
+    name: Publish to TestPyPI (dry run)
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/corollary
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true

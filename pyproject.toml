@@ -52,7 +52,7 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/gabe-santana/corollary"
-Documentation = "https://github.com/gabe-santana/corollary/tree/main/docs"
+Documentation = "https://gabe-santana.github.io/corollary/"
 Repository = "https://github.com/gabe-santana/corollary"
 Issues = "https://github.com/gabe-santana/corollary/issues"
 Changelog = "https://github.com/gabe-santana/corollary/blob/main/CHANGELOG.md"
