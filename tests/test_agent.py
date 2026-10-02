@@ -312,6 +312,19 @@ def test_repair_rejects_invalid_rederivations_and_retries() -> None:
     assert pending == {"trend", "answer"}
 
 
+def test_repair_retries_after_a_malformed_rederivation() -> None:
+    agent, model = make_agent(FETCH, ANALYZE, repair_attempts=2)
+    agent.run("t")
+    correct_q2(agent)
+    model.add(
+        actions({"type": "claim", "formula": GROWTH}),  # no key: fails to parse
+        actions(claim("growth:Q3_vs_Q2", None, ["revenue:Q2", "revenue:Q3"], formula=GROWTH)),
+    )
+    agent.repair()
+    assert agent.kb.value("growth:Q3_vs_Q2") == pytest.approx(9.75609756)
+    assert "claim requires 'key'" in model.calls[3].prompt
+
+
 def test_repair_with_rules_needs_no_model() -> None:
     agent, model = make_agent(FETCH, actions(answer("ok", ["revenue:Q2"])))
     agent.run("t")

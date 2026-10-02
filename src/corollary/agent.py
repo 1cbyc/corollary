@@ -568,8 +568,11 @@ class Agent:
                 feedback = [str(exc)]
                 continue
             claims = [a for a in parsed.actions if isinstance(a, Claim) and a.key == key]
-            if not parsed.actions:
-                return None
+            if not parsed.actions and not parsed.errors:
+                return None  # The model says the beliefs are not sufficient.
+            if not claims and parsed.errors:
+                feedback = list(parsed.errors)
+                continue
             if not claims:
                 feedback = [f'respond with one "claim" action for key `{key}`']
                 continue
