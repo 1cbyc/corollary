@@ -283,7 +283,6 @@ class Proof:
 
     def to_json(self, **kwargs: Any) -> str:
         kwargs.setdefault("indent", 2)
-        kwargs.setdefault("default", str)
         return json.dumps(self.to_dict(), **kwargs)
 
     @classmethod
