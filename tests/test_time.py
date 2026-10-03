@@ -66,8 +66,25 @@ def test_new_conclusions_never_rest_on_expired_evidence(kb: BeliefBase, clock: C
     assert kb.status("price") is Status.OUT
 
 
-def test_forgotten_validity_windows_are_dropped(kb: BeliefBase) -> None:
+def test_forgotten_validity_windows_are_dropped(kb: BeliefBase, clock: Clock) -> None:
     kb.assert_("price", 1, source="tool:quote", ttl=timedelta(minutes=1))
     kb.assert_("price", 1, source="tool:quote")  # the same source again, now without a window
+    clock.advance(minutes=2)  # the old window's time comes; the next scan forgets it
     kb.refresh()
     assert kb._expiring == set()
+    assert kb.status("price") is Status.IN
+
+
+def test_refresh_skips_the_scan_until_something_can_expire(kb: BeliefBase, clock: Clock) -> None:
+    kb.assert_("a", 1, source="tool:x", ttl=timedelta(minutes=10))
+    kb.assert_("b", 2, source="tool:x", ttl=timedelta(minutes=5))
+    clock.advance(minutes=4)
+    assert kb.refresh() == []
+    clock.advance(minutes=1)  # b's window ends exactly now
+    assert [x.key for x in kb.refresh()] == ["b"]
+    kb.assert_("c", 3, source="tool:x", ttl=timedelta(minutes=1))  # an earlier window than a's
+    clock.advance(minutes=1)
+    assert [x.key for x in kb.refresh()] == ["c"]
+    clock.advance(minutes=4)
+    assert [x.key for x in kb.refresh()] == ["a"]
+    assert kb.refresh() == []

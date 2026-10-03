@@ -173,6 +173,9 @@ class BeliefBase:
         self._justifications: dict[str, Justification] = {}
         self._unless_consumers: defaultdict[str, set[str]] = defaultdict(set)
         self._expiring: set[str] = set()
+        # No evidence can expire before this time, so refresh() has nothing to scan until then. It is a
+        # lower bound: lowered whenever evidence with an earlier window is linked, recomputed on scans.
+        self._next_expiry: datetime | None = None
         self._rules: dict[str, Rule] = {}
         self._constraints: dict[str, Constraint] = {}
         self._documents: dict[str, str] = {}
@@ -579,10 +582,21 @@ class BeliefBase:
     def refresh(self) -> list[Belief]:
         """Re-check validity windows against the clock. Returns beliefs that just expired."""
         now = self.now()
+        if self._next_expiry is None or now < self._next_expiry:
+            return []  # nothing can have expired yet: the common case, and it costs nothing
         # Forget beliefs that no longer have any evidence with a validity window.
         self._expiring = {
             ref for ref in self._expiring if any(j.valid_until is not None for j in self._nodes[ref].justifications)
         }
+        self._next_expiry = min(
+            (
+                j.valid_until
+                for ref in self._expiring
+                for j in self._nodes[ref].justifications
+                if j.valid_until is not None and j.valid_until > now
+            ),
+            default=None,
+        )
         seeds = [
             ref
             for ref in self._expiring
@@ -1299,6 +1313,8 @@ class BeliefBase:
             self._unless_consumers[k].add(j.id)
         if j.valid_until is not None:
             self._expiring.add(node.ref)
+            if self._next_expiry is None or j.valid_until < self._next_expiry:
+                self._next_expiry = j.valid_until
 
     def _unlink(self, node: _Node, j: Justification) -> None:
         self._version += 1
