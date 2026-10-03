@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0a3] - 2026-10-03
+
+### Changed
+
+- `refresh()`, which `derive()`, `justify()`, the projector and the agent call, now skips its scan until the
+  earliest validity window can have ended. With 3,000 expiring premises, 3,000 derivations go from 3.96 s
+  to 0.05 s.
+
 ## [0.1.0a2] - 2026-10-02
 
 ### Added
@@ -102,6 +110,7 @@ First public pre-release.
 - **Persistence.** JSON snapshots with `save()` / `load()`, including the trust ledger.
 - Examples: a 20-conclusion self-repairing report, an offline agent, and a Claude agent.
 
-[Unreleased]: https://github.com/gabe-santana/corollary/compare/v0.1.0a2...HEAD
+[Unreleased]: https://github.com/gabe-santana/corollary/compare/v0.1.0a3...HEAD
+[0.1.0a3]: https://github.com/gabe-santana/corollary/compare/v0.1.0a2...v0.1.0a3
 [0.1.0a2]: https://github.com/gabe-santana/corollary/compare/v0.1.0a1...v0.1.0a2
 [0.1.0a1]: https://github.com/gabe-santana/corollary/releases/tag/v0.1.0a1
