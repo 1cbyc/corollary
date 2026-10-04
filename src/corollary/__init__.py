@@ -15,7 +15,7 @@ from .agent import Agent, Dependencies, NarrowResult, Report, StepRecord
 from .belief import Belief, Source, SourceKind, Status
 from .changes import Change, ChangeKind, Pending, Propagation
 from .conflict import Conflict, ConflictKind, Constraint, Resolution
-from .contract import SYSTEM_PROMPT, Answer, Cite, Claim, ToolCall, parse_response
+from .contract import SYSTEM_PROMPT, Action, Answer, Cite, Claim, ToolCall, parse_response
 from .errors import (
     CircularDefeatError,
     CitationError,
@@ -45,6 +45,7 @@ from .verify import CheckResult, Severity, VerificationReport, Verifier
 
 __all__ = [
     "SYSTEM_PROMPT",
+    "Action",
     "Agent",
     "Answer",
     "AnthropicModel",

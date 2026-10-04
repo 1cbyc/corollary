@@ -22,6 +22,7 @@ from .errors import ContractViolation
 __all__ = [
     "CONTRACT_SCHEMA",
     "SYSTEM_PROMPT",
+    "Action",
     "Answer",
     "Cite",
     "Claim",
