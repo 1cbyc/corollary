@@ -85,8 +85,11 @@ conclusion node, if that was new). The base is left exactly as it was.
 ### Re-derivation and early cutoff
 
 `propagate()` walks the latest revisions that are `OUT`, not retracted, and have a re-derivable
-justification, in creation order. For each, it resolves the recipe's input keys to their current
-believed revisions and:
+justification, in **dependency order**: a candidate is re-derived only after the candidates among its
+recipe inputs, so a conclusion is never re-derived from an input that is itself about to change.
+Creation time (then the belief key) only breaks ties between candidates that don't depend on each
+other; it can't be relied on for order, since coarse clocks can give equal timestamps. For each, it
+resolves the recipe's input keys to their current believed revisions and:
 
 - for a **rule**, re-runs it;
 - for a **model** justification, calls the re-deriver (the agent), which asks the model with a context
