@@ -8,6 +8,7 @@
 
 ## Checklist
 
+- [ ] The PR title and commit messages follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) (`feat:`, `fix:`, `docs:`, ...; see CONTRIBUTING.md)
 - [ ] Tests cover the change, and `pytest` passes
 - [ ] `ruff check .`, `ruff format --check .` and `mypy` pass
 - [ ] Public API changes are documented in `docs/` and in `CHANGELOG.md` under "Unreleased"

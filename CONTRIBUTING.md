@@ -86,10 +86,52 @@ silently survive in a conclusion** (over-retraction is acceptable, under-retract
 A change that weakens a guarantee needs an explicit discussion in the pull request, and usually a new
 opt-in setting rather than a changed default.
 
-## Commit messages and pull requests
+## Commit messages
+
+Every commit message follows [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/),
+the convention most open source projects use. It starts with a type, an optional scope in parentheses, and a
+short summary:
+
+```text
+<type>(<scope>): <summary>
+
+<body: what changed and why, wrapped at 72 characters>
+
+<footer: Closes #123, BREAKING CHANGE: ...>
+```
+
+Only the first line is required. Use one of these types:
+
+| Type | When | Example |
+|---|---|---|
+| `feat` | A new feature or capability | `feat(agent): add instructions for domain guidance` |
+| `fix` | A bug fix | `fix(kernel): roll back a failed assertion completely` |
+| `docs` | Documentation only | `docs: describe the dependency order of propagate()` |
+| `test` | Adding or correcting tests only | `test(proof): cover deep proofs in render()` |
+| `refactor` | A code change that neither fixes a bug nor adds a feature | `refactor(agent): share formula checking` |
+| `perf` | A performance improvement | `perf(kernel): compute confidence in linear time` |
+| `style` | Formatting only, no change in behavior | `style: apply ruff format` |
+| `build` | Packaging and dependencies | `build: pin mkdocs below 2` |
+| `ci` | Continuous integration | `ci: skip the Pages deploy while private` |
+| `chore` | Maintenance that fits no other type, including releases | `chore(release): 0.1.0a5` |
+| `revert` | Reverting an earlier commit | `revert: feat(agent): add instructions` |
+
+- **Scope** is optional. When you use one, name the module or area you changed: `kernel`, `agent`,
+  `contract`, `projector`, `tools`, `models`, `verify`, `proof`, `formula`, `textmatch`, `ledger`,
+  `examples` or `release`.
+- **Summary:** the imperative mood ("add", not "added" or "adds"), lowercase after the colon, no period at
+  the end, and at most 72 characters for the whole first line.
+- **Body:** explain *why* the change is needed and what it affects, not only what the diff shows.
+- **Breaking changes:** add `!` after the type or scope (`feat(agent)!: return errors in the report`) and
+  a `BREAKING CHANGE:` footer that tells users how to migrate. Until 1.0, minor versions may break the API,
+  but every break is still marked.
+- **Issues:** close them from the footer, for example `Closes #52`.
+
+A pull request's **title** follows the same format, because a squash merge uses it as the commit message.
+
+## Pull requests
 
 - Keep each pull request focused on one change. Small PRs are reviewed faster.
-- Write commit messages in the imperative mood ("Add citation span offsets", not "Added ...").
 - Fill in the pull request template, including how you tested the change.
 - Add a line under **Unreleased** in [CHANGELOG.md](CHANGELOG.md) for any user-visible change.
 - A maintainer will review your PR. Expect questions: they are about the design, never about you.
@@ -107,8 +149,8 @@ Security issues should **not** be reported publicly. See [SECURITY.md](SECURITY.
 
 ## Releasing (maintainers)
 
-1. Update the version in `src/corollary/_version.py` and move the **Unreleased** changelog entries under the
-   new version heading.
+1. Update the version in `src/corollary/_version.py`, move the **Unreleased** changelog entries under the
+   new version heading, and commit it as `chore(release): X.Y.Z`.
 2. Optionally, do a dry run: **Actions → Release → Run workflow** publishes to
    [TestPyPI](https://test.pypi.org/p/corollary).
 3. Merge to `main`, then create a GitHub release with a `vX.Y.Z` tag matching the version (`v0.1.0a1`
