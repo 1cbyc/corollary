@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Documented verification, formula and contract submodules now declare their supported public exports.
+
 ## [0.1.0a4] - 2026-10-03
 
 ### Changed

@@ -20,6 +20,8 @@ from typing import Any
 
 from .errors import FormulaError
 
+__all__ = ["FUNCTIONS", "evaluate", "formula_keys"]
+
 _PLACEHOLDER = re.compile(r"\{([^{}\s]+)\}")
 
 _BINARY: dict[type[ast.operator], Callable[[Any, Any], Any]] = {
