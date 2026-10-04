@@ -8,6 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The public `Action` type is now exported and documented for annotating parsed responses.
 - Documented verification, formula and contract submodules now declare their supported public exports.
 
 ## [0.1.0a4] - 2026-10-03
