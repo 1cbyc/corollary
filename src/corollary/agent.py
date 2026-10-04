@@ -75,6 +75,7 @@ class StepRecord:
     def __repr__(self) -> str:
         return (
             f"StepRecord(index={self.index}, prompt_length={len(self.prompt)}, "
+            f"response_length={len(self.response)}, "
             f"accepted={len(self.accepted)}, rejected={len(self.rejected)})"
         )
 
@@ -135,10 +136,14 @@ class Report:
     def __repr__(self) -> str:
         answer = self.answer
         answer_repr = repr(_short(answer)) if answer is not None else "None"
+        if self.error is not None:
+            error_repr = f"{type(self.error).__name__}({_short(str(self.error))!r})"
+        else:
+            error_repr = "None"
         return (
             f"Report(task={_short(self.task)!r}, completed={self.completed!r}, "
             f"answer={answer_repr}, steps={len(self.steps)}, "
-            f"rejections={len(self.rejections)}, error={self.error!r})"
+            f"rejections={len(self.rejections)}, error={error_repr})"
         )
 
 

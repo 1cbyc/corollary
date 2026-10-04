@@ -118,6 +118,20 @@ def test_report_repr_shows_error_and_no_answer() -> None:
     assert "ModelError" in text
 
 
+def test_report_repr_truncates_a_long_error_message() -> None:
+    from corollary import CallableModel
+
+    def failing(system: str, prompt: str) -> str:
+        raise ModelError("Anthropic API call failed: " + "x" * 2000)
+
+    report = Agent(CallableModel(failing)).run("t")
+    text = repr(report)
+    assert len(text) < 300
+    assert "ModelError(" in text
+    assert "Anthropic API call failed:" in text
+    assert "x" * 2000 not in text
+
+
 def test_report_str_is_unaffected_by_the_new_repr() -> None:
     agent, _ = make_agent(FETCH, ANALYZE, dependencies="declared")
     report = agent.run("Compare Q2 and Q3 revenue.")
@@ -132,6 +146,8 @@ def test_step_record_repr_is_short() -> None:
     assert step.prompt not in text
     assert step.response not in text
     assert f"index={step.index}" in text
+    assert f"prompt_length={len(step.prompt)}" in text
+    assert f"response_length={len(step.response)}" in text
     assert f"accepted={len(step.accepted)}" in text
     assert f"rejected={len(step.rejected)}" in text
 

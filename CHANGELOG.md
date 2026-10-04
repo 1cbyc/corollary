@@ -14,6 +14,9 @@ All notable changes to this project are documented here. The format follows
 - `Report` and `StepRecord` now have a short `repr` that summarizes (task, completion, step/rejection
   counts, error) instead of dumping every step's full prompt and raw model response. `str(report)` is
   unchanged.
+- `Report.__repr__`'s `error` is now truncated too (shown as `type(message)`, message truncated to ~60
+  chars), so a model error with a multi-kilobyte message no longer blows the repr back up. `StepRecord`'s
+  repr also shows `response_length` next to `prompt_length`.
 
 ## [0.1.0a4] - 2026-10-03
 
