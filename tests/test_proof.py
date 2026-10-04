@@ -116,3 +116,13 @@ def test_from_dict_rejects_other_formats(revenue_kb: BeliefBase) -> None:
         Proof.from_dict({**data, "format": "something-else"})
     with pytest.raises(ValueError, match="unsupported proof version 99"):
         Proof.from_dict({**data, "version": 99})
+
+
+def test_to_json_refuses_values_json_cannot_represent(kb: BeliefBase) -> None:
+    from decimal import Decimal
+
+    kb.assert_("price", Decimal("10.5"), source="tool:x")
+    proof = kb.proof("price")
+    with pytest.raises(TypeError, match="Decimal"):
+        proof.to_json()
+    assert '"10.5"' in proof.to_json(default=str)  # the lossy conversion is still available on request

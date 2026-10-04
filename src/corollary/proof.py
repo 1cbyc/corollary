@@ -282,6 +282,9 @@ class Proof:
         }
 
     def to_json(self, **kwargs: Any) -> str:
+        """The proof as JSON. Keyword arguments go to :func:`json.dumps`. A value JSON can't represent
+        (a ``Decimal``, a ``date``) raises ``TypeError`` rather than being silently turned into a
+        string; pass ``default=str`` to accept that loss."""
         kwargs.setdefault("indent", 2)
         return json.dumps(self.to_dict(), **kwargs)
 
