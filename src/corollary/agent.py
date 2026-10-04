@@ -40,6 +40,13 @@ _ANSWER_NOTE = "Answer the task: "
 
 log = logging.getLogger(__name__)
 
+_REPR_TRUNCATE_AT = 60
+
+
+def _short(text: str, limit: int = _REPR_TRUNCATE_AT) -> str:
+    """Truncate ``text`` for a repr, with an ellipsis if it was cut."""
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
 
 class Dependencies(str, enum.Enum):
     """How the runtime decides what a model claim depends on."""
@@ -55,7 +62,7 @@ class Dependencies(str, enum.Enum):
         return self.value
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class StepRecord:
     """What happened in one model call: the context, the raw response, and the verdicts."""
 
@@ -65,8 +72,14 @@ class StepRecord:
     accepted: tuple[str, ...] = ()
     rejected: tuple[str, ...] = ()
 
+    def __repr__(self) -> str:
+        return (
+            f"StepRecord(index={self.index}, prompt_length={len(self.prompt)}, "
+            f"accepted={len(self.accepted)}, rejected={len(self.rejected)})"
+        )
 
-@dataclass
+
+@dataclass(repr=False)
 class Report:
     """The outcome of :meth:`Agent.run`. Reads the belief base live, so after a retraction and
     :meth:`Agent.repair`, ``report.answer`` is the repaired answer."""
@@ -118,6 +131,15 @@ class Report:
 
     def __str__(self) -> str:
         return self.answer if self.answer is not None else "(no answer)"
+
+    def __repr__(self) -> str:
+        answer = self.answer
+        answer_repr = repr(_short(answer)) if answer is not None else "None"
+        return (
+            f"Report(task={_short(self.task)!r}, completed={self.completed!r}, "
+            f"answer={answer_repr}, steps={len(self.steps)}, "
+            f"rejections={len(self.rejections)}, error={self.error!r})"
+        )
 
 
 @dataclass(frozen=True)

@@ -10,6 +10,9 @@ All notable changes to this project are documented here. The format follows
 
 - The public `Action` type is now exported and documented for annotating parsed responses.
 - Documented verification, formula and contract submodules now declare their supported public exports.
+- `Report` and `StepRecord` now have a short `repr` that summarizes (task, completion, step/rejection
+  counts, error) instead of dumping every step's full prompt and raw model response. `str(report)` is
+  unchanged.
 
 ## [0.1.0a4] - 2026-10-03
 
