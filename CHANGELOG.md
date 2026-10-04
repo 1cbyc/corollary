@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0a4] - 2026-10-03
+
+### Changed
+
+- `Proof.to_json()` raises `TypeError` for a value JSON can't represent (a `Decimal`, a `date`) instead of
+  silently writing its string form, which changed the value's type on reload. Pass `default=str` to keep
+  the old behavior. Thanks to @Jah-yee for the first outside contribution (#24).
+
 ## [0.1.0a3] - 2026-10-03
 
 ### Changed
@@ -110,7 +118,8 @@ First public pre-release.
 - **Persistence.** JSON snapshots with `save()` / `load()`, including the trust ledger.
 - Examples: a 20-conclusion self-repairing report, an offline agent, and a Claude agent.
 
-[Unreleased]: https://github.com/gabe-santana/corollary/compare/v0.1.0a3...HEAD
+[Unreleased]: https://github.com/gabe-santana/corollary/compare/v0.1.0a4...HEAD
+[0.1.0a4]: https://github.com/gabe-santana/corollary/compare/v0.1.0a3...v0.1.0a4
 [0.1.0a3]: https://github.com/gabe-santana/corollary/compare/v0.1.0a2...v0.1.0a3
 [0.1.0a2]: https://github.com/gabe-santana/corollary/compare/v0.1.0a1...v0.1.0a2
 [0.1.0a1]: https://github.com/gabe-santana/corollary/releases/tag/v0.1.0a1
