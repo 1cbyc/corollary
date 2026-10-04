@@ -9,6 +9,7 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 
 - Documented verification, formula and contract submodules now declare their supported public exports.
+- `Proof.to_json()` serialization errors now identify the first belief whose value JSON cannot represent.
 
 ## [0.1.0a4] - 2026-10-03
 
