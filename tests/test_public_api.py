@@ -4,6 +4,7 @@ from types import ModuleType
 
 import pytest
 
+import corollary
 import corollary.contract as contract
 import corollary.formula as formula
 import corollary.verify as verify
@@ -34,6 +35,7 @@ import corollary.verify as verify
         (
             contract,
             {
+                "Action",
                 "CONTRACT_SCHEMA",
                 "SYSTEM_PROMPT",
                 "Answer",
@@ -50,3 +52,8 @@ import corollary.verify as verify
 def test_submodule_public_api(module: ModuleType, expected: set[str]) -> None:
     assert set(module.__all__) == expected
     assert all(not name.startswith("_") and hasattr(module, name) for name in module.__all__)
+
+
+def test_action_is_exported_from_package_root() -> None:
+    assert corollary.Action is contract.Action
+    assert "Action" in corollary.__all__

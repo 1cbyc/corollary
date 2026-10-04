@@ -84,6 +84,58 @@ def test_run_produces_answer_with_proof() -> None:
     assert agent.beliefs is agent.kb
 
 
+def test_report_repr_summarizes_without_dumping_prompts() -> None:
+    agent, _ = make_agent(FETCH, ANALYZE, dependencies="declared")
+    report = agent.run("Compare Q2 and Q3 revenue.")
+    text = repr(report)
+    assert "Compare Q2 and Q3 revenue." in text
+    assert "completed=True" in text
+    assert "steps=2" in text
+    assert "rejections=0" in text
+    assert "error=None" in text
+    assert report.answer is not None and report.answer in text
+    for step in report.steps:
+        assert step.prompt not in text
+        assert step.response not in text
+
+
+def test_report_repr_truncates_long_task_and_answer() -> None:
+    long_task = "x" * 200
+    agent, _ = make_agent(FETCH, ANALYZE, dependencies="declared")
+    report = agent.run(long_task)
+    text = repr(report)
+    assert long_task not in text
+    assert "..." in text
+    assert len(text) < len(long_task)
+
+
+def test_report_repr_shows_error_and_no_answer() -> None:
+    agent, _ = make_agent(FETCH)  # the scripted model has nothing to say on step 2
+    report = agent.run("t")
+    text = repr(report)
+    assert "completed=False" in text
+    assert "answer=None" in text
+    assert "ModelError" in text
+
+
+def test_report_str_is_unaffected_by_the_new_repr() -> None:
+    agent, _ = make_agent(FETCH, ANALYZE, dependencies="declared")
+    report = agent.run("Compare Q2 and Q3 revenue.")
+    assert str(report) == report.answer
+
+
+def test_step_record_repr_is_short() -> None:
+    agent, _ = make_agent(FETCH, ANALYZE, dependencies="declared")
+    report = agent.run("Compare Q2 and Q3 revenue.")
+    step = report.steps[0]
+    text = repr(step)
+    assert step.prompt not in text
+    assert step.response not in text
+    assert f"index={step.index}" in text
+    assert f"accepted={len(step.accepted)}" in text
+    assert f"rejected={len(step.rejected)}" in text
+
+
 def test_tool_results_are_premises_recorded_by_the_runtime() -> None:
     agent, _ = make_agent(FETCH, ANALYZE)
     agent.run("t")

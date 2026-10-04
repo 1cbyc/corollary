@@ -243,6 +243,7 @@ instructions="", include_documents=True) -> Projection`. `Projection(text, visib
 `SYSTEM_PROMPT`, `parse_response(text) -> ParsedResponse(actions, errors)`, and the action types
 `ToolCall(tool, args, key, claim)`, `Cite(document, quote, key, value, claim)`,
 `Claim(key, value, claim, follows_from, formula, confidence)`, `Answer(text, follows_from, confidence)`.
+`Action` is the union of those four action types and is the type of each item in `ParsedResponse.actions`.
 `corollary.contract` also provides `CONTRACT_SCHEMA` and `extract_json`.
 
 `corollary.formula` provides `evaluate(formula, values)`, `formula_keys(formula)` and `FUNCTIONS`.
